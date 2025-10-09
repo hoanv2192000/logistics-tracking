@@ -1,10 +1,23 @@
 "use client";
 import { useEffect, useState } from "react";
 
+type ImportSummary = {
+  shipments: number;
+  input_sea: number;
+  input_air: number;
+  milestones_sea: number;
+  milestones_air: number;
+  milestones_notes: number;
+};
+
+type ImportResponse =
+  | { ok: true; summary: ImportSummary }
+  | { ok: false; error: string };
+
 export default function AdminPage() {
-  const [token, setToken] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<any>(null);
+  const [token, setToken] = useState<string>("");
+  const [loading, setLoading] = useState<boolean>(false);
+  const [result, setResult] = useState<ImportResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -26,11 +39,15 @@ export default function AdminPage() {
         method: "POST",
         headers: { "x-admin-token": token },
       });
-      const json = await res.json();
-      if (!res.ok) setError(json?.error || "Import failed");
-      else setResult(json);
-    } catch (e: any) {
-      setError(e?.message || "Network error");
+      const json: ImportResponse = await res.json();
+      if (!res.ok) {
+        setError((json as { error?: string }).error ?? "Import failed");
+      } else {
+        setResult(json);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Network error";
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -39,7 +56,7 @@ export default function AdminPage() {
   return (
     <main style={{ padding: 24, maxWidth: 800, margin: "0 auto" }}>
       <h1>Admin — Import CSV từ Google Sheets</h1>
-      <p>Nhập token admin (giống biến <code>ADMIN_TOKEN</code> trên Vercel), sau đó bấm Import.</p>
+      <p>Nhập token admin (giống biến <code>ADMIN_TOKEN</code>), sau đó bấm Import.</p>
 
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
         <input
@@ -54,7 +71,8 @@ export default function AdminPage() {
       </div>
 
       {error && <p style={{ color: "crimson", marginTop: 12 }}>Lỗi: {error}</p>}
-      {result && (
+
+      {result && result.ok && (
         <div style={{ marginTop: 16 }}>
           <h3>Kết quả:</h3>
           <pre style={{ background: "#fafafa", padding: 12, border: "1px solid #eee", borderRadius: 8 }}>

@@ -2,13 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { parse } from "csv-parse/sync";
 
-function reqEnv(name: string) {
+type RowObject = Record<string, unknown>;
+
+function reqEnv(name: string): string {
   const v = process.env[name];
   if (!v) throw new Error(`Missing env: ${name}`);
   return v;
 }
 
-async function fetchCsv(url: string) {
+async function fetchCsv(url: string): Promise<RowObject[]> {
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error(`Fetch CSV failed: ${url} -> ${res.status}`);
   const text = await res.text();
@@ -18,8 +20,9 @@ async function fetchCsv(url: string) {
     trim: true,
   }) as Record<string, string>[];
 
+  // chuyển "" -> null (giữ type an toàn bằng unknown/object)
   return rows.map((r) => {
-    const obj: Record<string, string | null> = {};
+    const obj: RowObject = {};
     for (const [k, v] of Object.entries(r)) obj[k] = v === "" ? null : v;
     return obj;
   });
@@ -28,13 +31,14 @@ async function fetchCsv(url: string) {
 async function upsertTable(
   supabase: ReturnType<typeof getSupabaseAdmin>,
   table: string,
-  rows: Record<string, any>[],
+  rows: ReadonlyArray<RowObject>,
   onConflict: string
 ) {
   const BATCH = 1000;
   for (let i = 0; i < rows.length; i += BATCH) {
     const chunk = rows.slice(i, i + BATCH);
-    const { error } = await supabase.from(table).upsert(chunk, { onConflict });
+    // ép kiểu về object[] để thỏa kiểu của supabase-js, tránh dùng any
+    const { error } = await supabase.from(table).upsert(chunk as object[], { onConflict });
     if (error) throw new Error(`${table} upsert failed: ${error.message}`);
   }
 }
@@ -73,7 +77,9 @@ export async function POST(req: NextRequest) {
   await upsertTable(supabase, "milestones_air", msAir, "shipment_id");
 
   if (msNotes.length > 0) {
-    const ids = Array.from(new Set(msNotes.map((r) => r.shipment_id).filter(Boolean))) as string[];
+    const ids = Array.from(
+      new Set(msNotes.map((r) => String((r as RowObject).shipment_id ?? "")).filter(Boolean))
+    );
     if (ids.length > 0) {
       const { error: delErr } = await supabase.from("milestones_notes").delete().in("shipment_id", ids);
       if (delErr) throw new Error(`milestones_notes delete failed: ${delErr.message}`);
@@ -81,13 +87,13 @@ export async function POST(req: NextRequest) {
     const BATCH = 1000;
     for (let i = 0; i < msNotes.length; i += BATCH) {
       const chunk = msNotes.slice(i, i + BATCH);
-      const { error } = await supabase.from("milestones_notes").insert(chunk);
+      const { error } = await supabase.from("milestones_notes").insert(chunk as object[]);
       if (error) throw new Error(`milestones_notes insert failed: ${error.message}`);
     }
   }
 
   return NextResponse.json({
-    ok: true,
+    ok: true as const,
     summary: {
       shipments: shipments.length,
       input_sea: inputSea.length,
