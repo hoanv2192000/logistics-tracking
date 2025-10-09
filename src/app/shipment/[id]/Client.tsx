@@ -65,7 +65,7 @@ function groupMilestones(ms: MilestoneAny | null) {
     const base = k.split("_")[0]; // step1, step5.1 ...
     map[base] ||= {};
     if (k.endsWith("_status")) map[base].status = (v as string) || null;
-    if (k.endsWith("_date")) map[base].date = (v as string) || null;
+    if (k.endsWith("_date"))   map[base].date   = (v as string) || null;
   }
 
   // Xử lý các bước phụ (transshipment)
@@ -77,10 +77,7 @@ function groupMilestones(ms: MilestoneAny | null) {
   }
 
   const ordered = Object.keys(map)
-    .sort(
-      (a, b) =>
-        parseFloat(a.replace("step", "")) - parseFloat(b.replace("step", ""))
-    )
+    .sort((a, b) => parseFloat(a.replace("step", "")) - parseFloat(b.replace("step", "")))
     .map((key) => ({ key, ...map[key] }));
 
   extras.sort((a, b) => {
@@ -92,7 +89,7 @@ function groupMilestones(ms: MilestoneAny | null) {
   return { ordered, extras };
 }
 
-function Field({ label, value }: { label: string; value: any }) {
+function Field({ label, value }: { label: string; value: unknown }) {
   if (value === null || value === undefined || value === "") return null;
   return (
     <div>
@@ -120,9 +117,7 @@ export default function ShipmentClient({ id }: { id: string }) {
         setLoading(false);
       }
     });
-    return () => {
-      alive = false;
-    };
+    return () => { alive = false; };
   }, [id]);
 
   // Realtime subscribe
@@ -150,10 +145,7 @@ export default function ShipmentClient({ id }: { id: string }) {
     }
 
     channel.subscribe();
-
-    return () => {
-      supabaseClient.removeChannel(channel);
-    };
+    return () => { supabaseClient.removeChannel(channel); };
   }, [id]);
 
   if (loading || !data) {
@@ -169,9 +161,7 @@ export default function ShipmentClient({ id }: { id: string }) {
 
   return (
     <main style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
-      <h1>
-        Shipment {s.shipment_id} — {s.mode}
-      </h1>
+      <h1>Shipment {s.shipment_id} — {s.mode}</h1>
 
       <section style={{ marginTop: 12 }}>
         <Field label="Tracking" value={s.tracking_id} />
@@ -199,8 +189,7 @@ export default function ShipmentClient({ id }: { id: string }) {
           <ol>
             {ordered.map(({ key, status, date }) => (
               <li key={key} style={{ marginBottom: 6 }}>
-                <b>{stepsMap[key] ?? key.toUpperCase()}</b> —{" "}
-                {status ?? "N/A"}
+                <b>{stepsMap[key] ?? key.toUpperCase()}</b> — {status ?? "N/A"}
                 {date ? ` (${date})` : ""}
               </li>
             ))}
@@ -244,8 +233,7 @@ export default function ShipmentClient({ id }: { id: string }) {
           <ul>
             {data.input_air.map((f) => (
               <li key={f.flight}>
-                <b>{f.flight}</b> — {f.pieces ?? "?"} pcs ·{" "}
-                {f.weight_kg ?? "?"} kg ·{" "}
+                <b>{f.flight}</b> — {f.pieces ?? "?"} pcs · {f.weight_kg ?? "?"} kg ·{" "}
                 {f.chargeable_weight_kg ?? "?"} kg CW
               </li>
             ))}
@@ -261,8 +249,8 @@ export default function ShipmentClient({ id }: { id: string }) {
           <ul>
             {data.notes.map((n) => (
               <li key={n.id}>
-                [{n.note_time?.slice(0, 19).replace("T", " ")}] step {n.step}:{" "}
-                {n.note} {n.note_type ? `(${n.note_type})` : ""}
+                [{n.note_time?.slice(0, 19).replace("T", " ")}] step {n.step}: {n.note}{" "}
+                {n.note_type ? `(${n.note_type})` : ""}
               </li>
             ))}
           </ul>
