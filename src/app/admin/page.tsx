@@ -39,7 +39,7 @@ export default function AdminPage() {
   return (
     <main style={{ padding: 24, maxWidth: 800, margin: "0 auto" }}>
       <h1>Admin — Import CSV từ Google Sheets</h1>
-      <p>Nhập token admin (giống biến <code>ADMIN_TOKEN</code>), sau đó bấm Import.</p>
+      <p>Nhập token admin (giống biến <code>ADMIN_TOKEN</code> trên Vercel), sau đó bấm Import.</p>
 
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
         <input
@@ -57,7 +57,7 @@ export default function AdminPage() {
       {result && (
         <div style={{ marginTop: 16 }}>
           <h3>Kết quả:</h3>
-          <pre style={{ background: "#fafafa", padding: 12, border: "1px solid #eee" }}>
+          <pre style={{ background: "#fafafa", padding: 12, border: "1px solid #eee", borderRadius: 8 }}>
 {JSON.stringify(result, null, 2)}
           </pre>
         </div>

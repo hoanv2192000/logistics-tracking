@@ -75,12 +75,14 @@ export async function POST(req: NextRequest) {
   if (msNotes.length > 0) {
     const ids = Array.from(new Set(msNotes.map((r) => r.shipment_id).filter(Boolean))) as string[];
     if (ids.length > 0) {
-      await supabase.from("milestones_notes").delete().in("shipment_id", ids);
+      const { error: delErr } = await supabase.from("milestones_notes").delete().in("shipment_id", ids);
+      if (delErr) throw new Error(`milestones_notes delete failed: ${delErr.message}`);
     }
     const BATCH = 1000;
     for (let i = 0; i < msNotes.length; i += BATCH) {
       const chunk = msNotes.slice(i, i + BATCH);
-      await supabase.from("milestones_notes").insert(chunk);
+      const { error } = await supabase.from("milestones_notes").insert(chunk);
+      if (error) throw new Error(`milestones_notes insert failed: ${error.message}`);
     }
   }
 
