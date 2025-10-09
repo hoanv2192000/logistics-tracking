@@ -34,18 +34,23 @@ export default function AdminPage() {
     localStorage.setItem("lt_admin_token", t);
   }
 
-  // 🔐 xác thực token bằng cách thử gọi API
+  function logout() {
+    localStorage.removeItem("lt_admin_token");
+    setToken("");
+    setIsAuthorized(false);
+    setResult(null);
+    setError(null);
+  }
+
   async function verifyToken(t: string) {
     try {
+      // gọi nhẹ để xác thực token (nếu sai -> 401)
       const res = await fetch("/api/admin/import", {
         method: "POST",
         headers: { "x-admin-token": t },
       });
-      const json: ImportResponse = await res.json();
-      if (json.ok || res.status === 401) {
-        // chỉ cần không lỗi network => hợp lệ hoặc sẽ bị Unauthorized
-        if (res.status !== 401) setIsAuthorized(true);
-      }
+      if (res.status !== 401) setIsAuthorized(true);
+      // không cần import thật, nên không đọc body
     } catch {
       setIsAuthorized(false);
     }
@@ -61,8 +66,11 @@ export default function AdminPage() {
         headers: { "x-admin-token": token },
       });
       const json: ImportResponse = await res.json();
-      if (!res.ok) setError((json as { error?: string }).error ?? "Import failed");
-      else setResult(json);
+      if (!res.ok) {
+        setError((json as { error?: string }).error ?? "Import failed");
+      } else {
+        setResult(json);
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Network error";
       setError(msg);
@@ -71,34 +79,42 @@ export default function AdminPage() {
     }
   }
 
-  // 🔒 Nếu chưa xác thực thì chỉ hiện form nhập token
+  const Header = (
+    <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+      <h1 style={{ margin: 0 }}>Admin — Import CSV</h1>
+      {isAuthorized ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 13, color: "#0a7f2e" }}>Đã đăng nhập</span>
+          <button onClick={logout} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #ddd", background: "#fff" }}>
+            Đăng xuất
+          </button>
+        </div>
+      ) : (
+        <span style={{ fontSize: 13, color: "#a00" }}>Chưa xác thực</span>
+      )}
+    </header>
+  );
+
+  // Nếu chưa xác thực thì chỉ hiện form nhập token
   if (!isAuthorized) {
     return (
-      <main style={{ padding: 24, maxWidth: 500, margin: "80px auto", textAlign: "center" }}>
-        <h2>🔒 Admin Access</h2>
-        <p>Nhập token admin để truy cập chức năng Import CSV.</p>
+      <main style={{ padding: 24, maxWidth: 520, margin: "80px auto", textAlign: "center", border: "1px solid #eee", borderRadius: 12 }}>
+        {Header}
+        <p>Nhập token admin (trùng <code>ADMIN_TOKEN</code> trên Vercel) để truy cập.</p>
         <input
           value={token}
           onChange={(e) => saveToken(e.target.value)}
           placeholder="ADMIN_TOKEN"
           style={{
-            width: "100%",
-            padding: 10,
-            border: "1px solid #ccc",
-            borderRadius: 8,
-            marginTop: 12,
-            marginBottom: 12,
+            width: "100%", padding: 12, border: "1px solid #ccc", borderRadius: 8,
+            marginTop: 12, marginBottom: 12,
           }}
         />
         <button
           onClick={() => verifyToken(token)}
           style={{
-            padding: "10px 16px",
-            borderRadius: 8,
-            border: "none",
-            background: "#0070f3",
-            color: "white",
-            cursor: "pointer",
+            padding: "10px 16px", borderRadius: 8, border: "none",
+            background: "#0070f3", color: "white", cursor: "pointer",
           }}
         >
           Xác nhận
@@ -107,13 +123,17 @@ export default function AdminPage() {
     );
   }
 
-  // ✅ Nếu xác thực đúng, hiển thị giao diện Import
+  // Đã xác thực -> giao diện import
   return (
     <main style={{ padding: 24, maxWidth: 800, margin: "0 auto" }}>
-      <h1>Admin — Import CSV từ Google Sheets</h1>
+      {Header}
       <p>Nhấn Import để đồng bộ dữ liệu từ Google Sheets lên Supabase.</p>
 
-      <button onClick={doImport} disabled={loading} style={{ padding: "10px 20px" }}>
+      <button
+        onClick={doImport}
+        disabled={loading}
+        style={{ padding: "10px 20px", borderRadius: 8, border: "1px solid #ddd", background: "#fff" }}
+      >
         {loading ? "Đang import..." : "Import"}
       </button>
 
