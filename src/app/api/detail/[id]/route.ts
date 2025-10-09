@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import type { Shipment, InputSea, InputAir, MilestoneAny, Note } from "@/types";
 
@@ -6,13 +6,13 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(
-  _req: Request,
-  { params }: { params: { id: string } }
+  _req: NextRequest,
+  ctx: { params: Promise<{ id: string }> } // 👈 Next.js 15: params là Promise
 ) {
+  const { id } = await ctx.params; // 👈 giải Promise để lấy id
   const supabaseAdmin = getSupabaseAdmin();
-  const id = params.id;
 
-  // Lấy thông tin shipment chính
+  // 1) Shipment
   const { data: ship, error: e1 } = await supabaseAdmin
     .from("shipments")
     .select("*")
@@ -23,13 +23,13 @@ export async function GET(
     return NextResponse.json({ ok: false, error: "Not found" }, { status: 404 });
   }
 
-  // Lấy input SEA/AIR song song
+  // 2) Inputs (song song)
   const [seaRes, airRes] = await Promise.all([
     supabaseAdmin.from("input_sea").select("*").eq("shipment_id", id),
     supabaseAdmin.from("input_air").select("*").eq("shipment_id", id),
   ]);
 
-  // Lấy milestone phù hợp theo mode
+  // 3) Milestones theo mode
   let milestones: MilestoneAny | null = null;
   if (ship.mode === "SEA") {
     const { data } = await supabaseAdmin
@@ -47,7 +47,7 @@ export async function GET(
     milestones = (data as MilestoneAny) ?? null;
   }
 
-  // Lấy ghi chú (notes)
+  // 4) Notes
   const { data: notes } = await supabaseAdmin
     .from("milestones_notes")
     .select("*")
