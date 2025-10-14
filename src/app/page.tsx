@@ -9,7 +9,6 @@ import { lruSearchGet, lruSearchSet } from "@/lib/cache";
 function escapeReg(s: string) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-
 function Highlight({ text, q }: { text?: string | null; q: string }) {
   if (!text) return null;
   if (!q || q.length < 2) return <>{text}</>;
@@ -64,22 +63,18 @@ export default function Page() {
   }
 
   const polOptions = useMemo(() => {
-  const list = rows
-    .map((r) =>
-      String((r as Record<string, unknown>)["pol_aol"] ?? "").trim()
-    )
-    .filter(Boolean);
-  return uniqueCaseInsensitive(list);
-}, [rows]);
+    const list = rows
+      .map((r) => String((r as Record<string, unknown>)["pol_aol"] ?? "").trim())
+      .filter(Boolean);
+    return uniqueCaseInsensitive(list);
+  }, [rows]);
 
-const podOptions = useMemo(() => {
-  const list = rows
-    .map((r) =>
-      String((r as Record<string, unknown>)["pod_aod"] ?? "").trim()
-    )
-    .filter(Boolean);
-  return uniqueCaseInsensitive(list);
-}, [rows]);
+  const podOptions = useMemo(() => {
+    const list = rows
+      .map((r) => String((r as Record<string, unknown>)["pod_aod"] ?? "").trim())
+      .filter(Boolean);
+    return uniqueCaseInsensitive(list);
+  }, [rows]);
 
   function buildKey() {
     return JSON.stringify({
@@ -126,8 +121,8 @@ const podOptions = useMemo(() => {
       setRows(data);
       lruSearchSet(key, data);
     } catch (e: unknown) {
+      // chỉ log nếu không phải AbortError
       if (!(e && typeof e === "object" && (e as { name?: string }).name === "AbortError")) {
-        // chỉ log nếu không phải AbortError
         console.error("search error:", e);
       }
     } finally {
@@ -138,10 +133,23 @@ const podOptions = useMemo(() => {
 
   useEffect(() => {
     if (!touched || !canSearch) return;
-    const t = setTimeout(() => doSearch(), 300);
+    const t = setTimeout(() => void doSearch(), 300);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q, pol, pod, sortBy, dir, touched, canSearch]);
+
+  // Esc để huỷ khi đang loading
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape" && loading) {
+        if (abortRef.current) abortRef.current.abort();
+        abortRef.current = null;
+        setLoading(false);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [loading]);
 
   function clearAll() {
     setQ("");
@@ -269,11 +277,21 @@ const podOptions = useMemo(() => {
       {/* Results */}
       {touched && canSearch && (
         <>
-          {loading ? (
-            <div className="empty">Searching…</div>
-          ) : rows.length === 0 ? (
-            <div className="empty">No matching records found.</div>
-          ) : (
+          {!loading && rows.length === 0 ? (
+            // ===== Empty (Trắng tinh khiết – CTA rõ ràng)
+            <section className="empty-wrap">
+              <div className="empty-card">
+                <h3>No matching records found.</h3>
+                <p className="empty-sub">
+                  💡Tip: Please verify the spelling or provide a more precise 
+                  <b>Tracking ID</b>, <b>MBL number</b>, <b>HBL number</b>, or <b>Container number</b> for better accuracy.
+                </p>
+                <div className="empty-actions">
+                  <button className="btn-cta" onClick={clearAll}>Clear filters</button>
+                </div>
+              </div>
+            </section>
+          ) : !loading && rows.length > 0 ? (
             <section className="table-wrap">
               <div className="table-scroll">
                 <div className="table">
@@ -294,13 +312,12 @@ const podOptions = useMemo(() => {
 
                   {/* Rows */}
                   {rows.map((r, idx) => {
-                    // cho phép đọc các field linh hoạt khác tên:
                     const x = r as SearchRow & Record<string, unknown>;
                     const sx = x as Record<string, unknown>;
                     return (
                       <div className="tr" key={idx}>
                         <div className="td td-actions td-sticky">
-                          {/* ==== NÚT PREMIUM (đã thay class) ==== */}
+                          {/* Nút Premium */}
                           <Link
                             href={`/shipment/${x.shipment_id || ""}`}
                             className="btn-premium"
@@ -356,8 +373,32 @@ const podOptions = useMemo(() => {
                 </div>
               </div>
             </section>
-          )}
+          ) : null}
         </>
+      )}
+
+      {/* ===== Loading Overlay (Style A – Glassmorphism + Soft Motion) */}
+      {loading && (
+        <div className="overlay" role="status" aria-live="polite" aria-label="Searching">
+          <div className="glass">
+            <div className="ring">
+              <span className="dot" />
+            </div>
+            <div className="loading-text">Searching…</div>
+            <button
+              className="cancel"
+              onClick={() => {
+                if (abortRef.current) abortRef.current.abort();
+                abortRef.current = null;
+                setLoading(false);
+              }}
+              aria-label="Cancel searching (Esc)"
+              title="Esc"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
       )}
 
       {/* Styles */}
@@ -612,6 +653,121 @@ const podOptions = useMemo(() => {
           padding: 0 2px;
           border-radius: 3px;
         }
+
+        /* ===== Empty – Trắng tinh khiết */
+        .empty-wrap {
+          max-width: 980px;
+          margin: 24px auto 0;
+          padding: 0 8px;
+        }
+        .empty-card {
+          background: #ffffff;
+          border: 1px solid #e6eaf2;
+          border-radius: 16px;
+          padding: 28px 24px;
+          text-align: center;
+          box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
+        }
+        .empty-card h3 {
+          margin: 0 0 8px;
+          font-size: 20px;
+          font-weight: 800;
+          color: #0f172a;
+        }
+        .empty-sub {
+          color: #475569;
+          margin: 0 auto 16px;
+          max-width: 720px;
+          line-height: 1.6;
+        }
+        .empty-actions {
+          display: flex;
+          justify-content: center;
+        }
+        .btn-cta {
+          height: 40px;
+          padding: 0 18px;
+          border-radius: 12px;
+          border: none;
+          font-weight: 800;
+          font-size: 14px;
+          cursor: pointer;
+          background: #3b82f6;
+          color: white;
+          box-shadow: 0 10px 18px rgba(59, 130, 246, 0.25);
+          transition: transform 0.1s ease, box-shadow 0.15s ease;
+        }
+        .btn-cta:hover { transform: translateY(-1px); box-shadow: 0 14px 24px rgba(59,130,246,.28); }
+        .btn-cta:active { transform: translateY(0); }
+
+        /* ===== Loading Overlay – Glassmorphism */
+        .overlay {
+          position: fixed;
+          inset: 0;
+          background: radial-gradient(1200px 600px at 50% -10%, rgba(59,130,246,0.12), transparent 60%),
+                      rgba(248, 250, 252, 0.55);
+          backdrop-filter: blur(8px);
+          -webkit-backdrop-filter: blur(8px);
+          display: grid;
+          place-items: center;
+          z-index: 50;
+        }
+        .glass {
+          width: 360px;
+          max-width: calc(100% - 32px);
+          background: linear-gradient(180deg, rgba(255,255,255,0.85), rgba(246,248,252,0.9));
+          border: 1px solid rgba(15,23,42,0.08);
+          border-radius: 20px;
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.9),
+            0 18px 48px rgba(15, 23, 42, 0.16),
+            0 0 0 8px rgba(59,130,246,0.10);
+          padding: 24px 20px 18px;
+          text-align: center;
+        }
+
+        .ring {
+          width: 72px;
+          height: 72px;
+          margin: 2px auto 12px;
+          border-radius: 50%;
+          position: relative;
+          background:
+            conic-gradient(from 0deg, rgba(59,130,246,0.9), rgba(59,130,246,0.35) 40%, rgba(59,130,246,0.12) 60%, transparent 80%);
+          mask: radial-gradient(circle 32px at 50% 50%, transparent 61%, black 62%);
+          animation: spin 1.6s linear infinite;
+          filter: drop-shadow(0 6px 14px rgba(59,130,246,0.35));
+        }
+        .dot {
+          position: absolute;
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          background: #3b82f6;
+          top: -2px;
+          left: 50%;
+          transform: translateX(-50%);
+          box-shadow: 0 0 10px rgba(59,130,246,0.6);
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .loading-text {
+          font-weight: 900;
+          letter-spacing: 0.02em;
+          color: #0f172a;
+          margin-bottom: 10px;
+        }
+        .cancel {
+          height: 36px;
+          padding: 0 14px;
+          border-radius: 999px;
+          border: 1px solid rgba(15,23,42,0.25);
+          background: linear-gradient(180deg, #ffffff, #f3f6fc);
+          cursor: pointer;
+          font-weight: 800;
+          color: #0f172a;
+        }
+        .cancel:hover { box-shadow: 0 8px 18px rgba(15,23,42,0.08); }
       `}</style>
     </main>
   );
