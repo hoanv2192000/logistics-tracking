@@ -4,6 +4,23 @@ import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// Kiểu hàng dữ liệu tối thiểu ta dùng khi select từ view
+type SearchRow = {
+  shipment_id: string | number | null;
+  tracking_id: string | null;
+  mode: string | null;
+  mbl_number: string | null;
+  hbl_number: string | null;
+  carrier: string | null;
+  container_number: string | null;
+  etd_date: string | null;
+  atd_date: string | null;
+  eta_date: string | null;
+  ata_date: string | null;
+  pol_aol: string | null;
+  pod_aod: string | null;
+};
+
 export async function GET(req: Request) {
   const supabase = getSupabaseAdmin();
   const { searchParams } = new URL(req.url);
@@ -23,7 +40,8 @@ export async function GET(req: Request) {
 
   // So khớp EXACT không phân biệt hoa thường: thử 3 biến thể
   const variants = Array.from(new Set([qRaw, qRaw.toLowerCase(), qRaw.toUpperCase()]));
-  const buildEqOr = (col: string) => variants.map(v => `${col}.eq.${v}`).join(",");
+  const buildEqOr = (col: string) =>
+    variants.map((v) => `${col}.eq.${v}`).join(",");
 
   try {
     // ---- 1) Exact match theo shipment_id / tracking_id / mbl / hbl ----
@@ -58,12 +76,14 @@ export async function GET(req: Request) {
 
     query = query.order(sortCol, { ascending, nullsFirst: ascending }).limit(200);
 
-    let { data, error } = await query;
+    const { data, error } = await query;
     if (error) throw error;
 
+    // Dùng biến finalData để có thể gán lại (thay vì gán trực tiếp vào data)
+    let finalData = data as SearchRow[];
+
     // ---- 2) Nếu chưa khớp, thử exact match theo CONTAINER ----
-    // (container_number trong view là chuỗi gộp -> không eq được, nên tra trực tiếp input_sea)
-    if (!data || data.length === 0) {
+    if (!finalData || finalData.length === 0) {
       const inSea = await supabase
         .from("input_sea")
         .select("shipment_id")
@@ -72,7 +92,14 @@ export async function GET(req: Request) {
 
       if (inSea.error) throw inSea.error;
 
-      const shipmentIds = (inSea.data || []).map(r => r.shipment_id);
+      // Lấy shipment_id an toàn (filter đúng kiểu)
+      const shipmentIds = (inSea.data ?? [])
+        .map((r) => (r as Record<string, unknown>)["shipment_id"])
+        .filter(
+          (v): v is string | number =>
+            typeof v === "string" || typeof v === "number"
+        );
+
       if (shipmentIds.length > 0) {
         let q2 = supabase
           .from("shipment_search_v")
@@ -99,14 +126,28 @@ export async function GET(req: Request) {
         q2 = q2.order(sortCol, { ascending, nullsFirst: ascending }).limit(200);
         const got = await q2;
         if (got.error) throw got.error;
-        data = got.data || [];
+
+        finalData = (got.data ?? []) as SearchRow[];
       }
     }
 
-    // Không khớp exact với bất kỳ loại nào -> trả rỗng
-    return NextResponse.json({ ok: true, data: data ?? [] });
-  } catch (e: any) {
+    // Trả kết quả cuối cùng
+    return NextResponse.json<{ ok: true; data: SearchRow[] }>({
+      ok: true,
+      data: finalData ?? [],
+    });
+  } catch (e: unknown) {
     console.error("[/api/search] error:", e);
-    return NextResponse.json({ ok: false, error: e.message }, { status: 500 });
+    const error =
+      e instanceof Error
+        ? e.message
+        : typeof e === "string"
+        ? e
+        : "Unknown error";
+
+    return NextResponse.json<{ ok: false; error: string }>(
+      { ok: false, error },
+      { status: 500 }
+    );
   }
 }

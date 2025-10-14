@@ -6,7 +6,13 @@
     "dev": "next dev --turbopack",
     "build": "next build --turbopack",
     "start": "next start",
-    "lint": "eslint"
+
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+
+    "typecheck": "tsc --noEmit",
+
+    "prebuild": "npm run typecheck && npm run lint"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.74.0",
@@ -20,7 +26,6 @@
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
-    "@tailwindcss/postcss": "^4.1.14",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

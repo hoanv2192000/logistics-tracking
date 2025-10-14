@@ -4,8 +4,8 @@
 // - lruSearchCache: cache kết quả search gần đây
 
 type DetailEntry<T> = { value: T; at: number };
-const detailCache = new Map<string, DetailEntry<any>>();
-const promiseCache = new Map<string, Promise<any>>();
+const detailCache = new Map<string, DetailEntry<unknown>>();
+const promiseCache = new Map<string, Promise<unknown>>();
 
 // TTL mặc định cho chi tiết: 60s (tùy chỉnh nếu cần)
 const DETAIL_TTL_MS = 60_000;
@@ -22,7 +22,9 @@ export function cacheSetDetail<T>(id: string, value: T) {
 }
 
 export async function dedupe<T>(key: string, factory: () => Promise<T>): Promise<T> {
-  if (promiseCache.has(key)) return promiseCache.get(key)! as Promise<T>;
+  if (promiseCache.has(key)) {
+    return promiseCache.get(key)! as Promise<T>;
+  }
   const p = factory().finally(() => promiseCache.delete(key));
   promiseCache.set(key, p);
   return p;
@@ -31,19 +33,25 @@ export async function dedupe<T>(key: string, factory: () => Promise<T>): Promise
 // ===== Simple LRU for search =====
 type LruItem<V> = { key: string; value: V };
 const LRU_CAP = 30;
-const lru: LruItem<any>[] = [];
+const lru: Array<LruItem<unknown>> = [];
 
 export function lruSearchGet<T>(key: string): T | undefined {
-  const idx = lru.findIndex(x => x.key === key);
+  const idx = lru.findIndex((x) => x.key === key);
   if (idx === -1) return;
-  const [it] = lru.splice(idx, 1);
+  const removed = lru.splice(idx, 1);
+  const it = removed[0];
+  if (!it) return;
   lru.unshift(it);
   return it.value as T;
 }
 
 export function lruSearchSet<T>(key: string, value: T) {
-  const existing = lru.findIndex(x => x.key === key);
-  if (existing !== -1) lru.splice(existing, 1);
+  const existing = lru.findIndex((x) => x.key === key);
+  if (existing !== -1) {
+    lru.splice(existing, 1);
+  }
   lru.unshift({ key, value });
-  if (lru.length > LRU_CAP) lru.pop();
+  if (lru.length > LRU_CAP) {
+    lru.pop();
+  }
 }

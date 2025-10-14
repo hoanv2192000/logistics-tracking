@@ -77,6 +77,49 @@ function normalizeStepKey(raw: string | number | null | undefined): string {
   return s;
 }
 
+/** Truy cập trường động an toàn từ object */
+function readString(obj: unknown, key: string): string | null {
+  if (!obj || typeof obj !== "object") return null;
+  const rec = obj as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(rec, key)) return null;
+  const v = rec[key];
+  return typeof v === "string" ? v : null;
+}
+function readUnknown(obj: unknown, key: string): unknown {
+  if (!obj || typeof obj !== "object") return undefined;
+  const rec = obj as Record<string, unknown>;
+  return rec[key];
+}
+
+/** Helpers cho Note (không dùng any) */
+function getStepFromNote(n: Note): string {
+  const raw = readUnknown(n, "step");
+  return normalizeStepKey(typeof raw === "string" ? raw : undefined);
+}
+function getNoteTimeMs(n: Note): number {
+  const raw = readUnknown(n, "note_time");
+  if (raw instanceof Date) return raw.getTime();
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : 0;
+  if (typeof raw === "string") {
+    const t = Date.parse(raw);
+    return Number.isNaN(t) ? 0 : t;
+  }
+  return 0;
+}
+function getNoteTimeText(n: Note, sliceTo: number): string {
+  const raw = readUnknown(n, "note_time");
+  if (raw instanceof Date) return raw.toISOString().slice(0, sliceTo).replace("T", " ");
+  if (typeof raw === "string") return raw.slice(0, sliceTo).replace("T", " ");
+  return "";
+}
+function getNoteType(n: Note): string | undefined {
+  return readString(n, "note_type") ?? undefined;
+}
+function getNoteContent(n: Note): string {
+  return readString(n, "note") ?? "";
+}
+
+/** Gom milestones thành ordered & extras (giữ logic cũ) */
 function groupMilestones(ms: MilestoneAny | null) {
   if (!ms) {
     return {
@@ -117,14 +160,6 @@ function groupMilestones(ms: MilestoneAny | null) {
   return { ordered, extras };
 }
 
-function readString(obj: unknown, key: string): string | null {
-  if (!obj || typeof obj !== "object") return null;
-  const rec = obj as Record<string, unknown>;
-  if (!Object.prototype.hasOwnProperty.call(rec, key)) return null;
-  const v = rec[key];
-  return typeof v === "string" ? v : null;
-}
-
 function formatYMD(d?: string | null): string {
   if (!d) return "—";
   if (/^\d{4}-\d{2}-\d{2}/.test(d)) return d.slice(0, 10);
@@ -134,27 +169,16 @@ function formatYMD(d?: string | null): string {
 function groupNotesByStep(notes: Note[]): Record<string, Note[]> {
   const map: Record<string, Note[]> = {};
   for (const n of notes) {
-    const key = normalizeStepKey((n as any)?.step);
+    const key = getStepFromNote(n);
     (map[key] ||= []).push(n);
   }
   for (const k of Object.keys(map)) {
-    map[k].sort((a, b) => {
-      const da = Date.parse(String((a as any).note_time ?? 0));
-      const db = Date.parse(String((b as any).note_time ?? 0));
-      return db - da;
-    });
+    const arr = map[k];
+    if (arr && arr.length > 1) {
+      arr.sort((a, b) => getNoteTimeMs(b) - getNoteTimeMs(a));
+    }
   }
   return map;
-}
-
-function getLatestMilestoneStatus(
-  ordered: { key: string; status?: string | null; date?: string | null }[],
-  extras: { key: string; status?: string | null; date?: string | null }[]
-) {
-  const all = [...ordered, ...extras].filter((x) => x.date && !Number.isNaN(Date.parse(String(x.date))));
-  if (all.length === 0) return null;
-  all.sort((a, b) => Date.parse(String(b.date)) - Date.parse(String(a.date)));
-  return { status: all[0].status ?? null, date: all[0].date ?? null };
 }
 
 const STEP_EXTRA_FIELD: Record<"SEA" | "AIR", Record<string, keyof Shipment>> = {
@@ -166,7 +190,7 @@ function getStepExtraValue(mode: string | undefined, stepKey: string, s: Shipmen
   const baseKey = normalizeStepKey(stepKey).split(".")[0];
   const field = STEP_EXTRA_FIELD[m][baseKey as keyof typeof STEP_EXTRA_FIELD["SEA"]];
   if (!field) return null;
-  const val = (s as any)?.[field];
+  const val = s[field];
   if (val == null) return null;
   const str = String(val).trim();
   return str || null;
@@ -190,7 +214,7 @@ export default function ShipmentClient({ id }: { id: string }) {
     const cached = cacheGetDetail<Detail>(id);
     if (cached) {
       setData(cached);
-      setLoading(false); // hiển thị ngay từ cache
+      setLoading(false);
     } else {
       setLoading(true);
     }
@@ -212,11 +236,10 @@ export default function ShipmentClient({ id }: { id: string }) {
     return () => {
       alive = false;
     };
-    // cố tình không phụ thuộc `data` để lần nào vào cũng refetch nền
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  // ===== 3) Debounce realtime: gộp nhiều event trong ~800ms rồi refetch 1 lần
+  // ===== 3) Debounce realtime
   useEffect(() => {
     const channel = supabaseClient.channel(`ship-${id}`);
     const tables = [
@@ -228,11 +251,11 @@ export default function ShipmentClient({ id }: { id: string }) {
       { table: "milestones_notes", filter: `shipment_id=eq.${id}` },
     ];
 
-    let timer: any = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     let pending = false;
     const scheduleRefetch = () => {
       pending = true;
-      if (timer) return; // đã có timer → đợi gộp
+      if (timer) return;
       timer = setTimeout(async () => {
         timer = null;
         if (!pending) return;
@@ -242,7 +265,7 @@ export default function ShipmentClient({ id }: { id: string }) {
           cacheSetDetail(id, fresh);
           setData(fresh);
         }
-      }, 800); // cửa sổ debounce
+      }, 800);
     };
 
     for (const t of tables) {
@@ -311,8 +334,7 @@ export default function ShipmentClient({ id }: { id: string }) {
           .sktTr{height:46px;border-radius:10px;background:linear-gradient(90deg,#eef2f7 25%,#f7f9fc 37%,#eef2f7 63%);background-size:400px 100%;animation:shimmer 1.4s infinite}
           .sktTr + .sktTr{margin-top:8px}
           @keyframes shimmer{0%{background-position:-200px 0}100%{background-position:200px 0}}
-          @keyframes loadbar{0%{transform:translateX(-40%)}100%{transform:translateX(120%)}
-          }
+          @keyframes loadbar{0%{transform:translateX(-40%)}100%{transform:translateX(120%)}}
           @media (max-width:860px){.sktRow{grid-template-columns:1fr}}
         `}</style>
       </main>
@@ -473,7 +495,6 @@ export default function ShipmentClient({ id }: { id: string }) {
           <KVT k="Tracking" v={<span style={{ fontSize: 15, fontWeight: 600 }}>{s.tracking_id ?? "—"}</span>} />
           <div className="statusRow">
             <span className="statusLbl">Status</span>
-            {/* Ô status xanh lá nhạt */}
             <span className="statusPill">{effectiveStatus}</span>
           </div>
         </div>
@@ -522,8 +543,8 @@ export default function ShipmentClient({ id }: { id: string }) {
         </div>
       </section>
 
-      {/* ===== REMARKS (NEW) — inserted here, no layout change to others ===== */}
-      {(s.remarks && s.remarks.trim() !== "") && (
+      {/* ===== REMARKS ===== */}
+      {s.remarks && s.remarks.trim() !== "" && (
         <section className="remarksCard">
           <h3 className="secTitle">REMARKS</h3>
           <div className="remarksBody">
@@ -553,11 +574,10 @@ export default function ShipmentClient({ id }: { id: string }) {
             <div className="miniTop">
               <span>
                 Status
-                {dispSteps[currentIdx] && (
-                  <>
-                    <span className="nowText">  • Now: {dispSteps[currentIdx].label}</span>
-                  </>
-                )}
+                {(() => {
+                  const cur = dispSteps[currentIdx];
+                  return cur ? <span className="nowText">  • Now: {cur.label}</span> : null;
+                })()}
               </span>
               <span>{percent}%</span>
             </div>
@@ -693,7 +713,7 @@ export default function ShipmentClient({ id }: { id: string }) {
               <div className="tRow" key={f.flight ?? idx}>
                 <div>{idx + 1}</div>
                 <div>{f.flight}</div>
-                <div>{(f as any).unit_kind ?? "—"}</div>
+                <div>{readString(f, "unit_kind") ?? "—"}</div>
                 <div>{f.pieces ?? "—"}</div>
                 <div>{f.weight_kg ?? "—"}</div>
                 <div>{f.chargeable_weight_kg ?? "—"}</div>
@@ -711,19 +731,20 @@ export default function ShipmentClient({ id }: { id: string }) {
         ) : (
           <ul className="noteList">
             {data.notes.map((n) => {
-              const ts = (n as any).note_time as string | undefined;
-              const tsFmt = ts ? ts.slice(0, 19).replace("T", " ") : "";
-              const keyNorm = normalizeStepKey((n as any).step);
+              const tsFmt = getNoteTimeText(n, 19);
+              const keyNorm = getStepFromNote(n);
               const label = stepsMap[keyNorm] ?? keyNorm.toUpperCase();
+              const type = getNoteType(n);
+              const noteText = getNoteContent(n);
               return (
                 <li key={n.id} className="noteItem">
                   <span className="dot" />
                   <div className="noteBody">
                     <div className="noteMeta">
                       {tsFmt} — {label}
-                      {(n as any).note_type ? ` (${(n as any).note_type})` : ""}
+                      {type ? ` (${type})` : ""}
                     </div>
-                    <div className="noteText">{(n as any).note}</div>
+                    <div className="noteText">{noteText}</div>
                   </div>
                 </li>
               );
@@ -757,7 +778,7 @@ export default function ShipmentClient({ id }: { id: string }) {
         .timelineGrid{display:grid;grid-template-columns:1fr 1fr;gap:10px 20px}
         @media (max-width:860px){.secGrid{grid-template-columns:1fr}}
 
-        /* ===== Remarks card (isolated styles, no overrides) ===== */
+        /* ===== Remarks card ===== */
         .remarksCard{margin-top:16px;border-radius:16px;border:1px solid #e6eaf2;background:linear-gradient(180deg,#fff,#fafbff);box-shadow:0 10px 28px rgba(15, 23, 42,.06);padding:14px 16px}
         .remarksBody{display:flex;flex-direction:column;gap:6px;margin-top:6px}
         .remarkLine{display:flex;align-items:flex-start;gap:8px;font-size:13.5px;color:#0f172a;line-height:1.45}
@@ -804,7 +825,7 @@ export default function ShipmentClient({ id }: { id: string }) {
         .badge{font-size:11px;border:1px solid #e5e7eb;border-radius:999px;padding:2px 8px}
         .sub{margin-top:6px;color:#6b7280;font-weight:600}
 
-        /* ===== Extra transshipment compact box ===== */
+        /* Extra transshipment compact box */
         .extraBox{margin-top:10px;border:1px solid #e5e7eb;background:#fafbff;border-radius:10px;padding:8px 10px;display:flex;flex-direction:column;gap:6px}
         .extraRow{display:grid;grid-template-columns:auto auto 12px 1fr;align-items:center;gap:8px;font-weight:600;color:#0f172a}
         .extraStatus{padding:2px 8px;border:1px solid #e5e7eb;border-radius:999px;font-size:12px;background:#ffffff}
@@ -850,7 +871,7 @@ export default function ShipmentClient({ id }: { id: string }) {
         .dot{width:8px;height:8px;margin-top:6px;border-radius:999px;background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.15)}
         .noteMeta{font-size:12px;color:#667087;font-weight:700;letter-spacing:.02em}
         .noteText{margin-top:4px;color:#111827;font-size:13.5px}
-        .nowText {color: #f97316;      /* màu cam */font-weight: 700;}
+        .nowText {color: #f97316; font-weight: 700;}
       `}</style>
     </main>
   );
@@ -889,16 +910,18 @@ function NotesBox({
       <div className="notesT">Milestone Notes</div>
       <ul className="nList">
         {notes.map((n) => {
-          const ts = (n as any).note_time as string | undefined;
-          const tsFmt = ts ? ts.slice(0, 16).replace("T", " ") : "";
-          const keyNorm = normalizeStepKey((n as any).step) || stepId;
+          const tsFmt = getNoteTimeText(n, 16);
+          const keyNorm = getStepFromNote(n) || stepId;
           const noteLabel = stepsMap[keyNorm] ?? keyNorm.toUpperCase();
-          const type = (n as any).note_type as string | undefined;
+          const type = getNoteType(n);
+          const noteText = getNoteContent(n);
           return (
             <li key={n.id} className="nItem">
               <span className="nDot" />
               <div>
-                <div className="nMeta">{type ? icon(type) : ""} {(n as any).note}</div>
+                <div className="nMeta">
+                  {type ? icon(type) : ""} {noteText}
+                </div>
                 <div className="nMeta" style={{ fontWeight: 500 }}>
                   {tsFmt}
                   {noteLabel ? ` • ${noteLabel}` : ""}
@@ -916,4 +939,21 @@ function NotesBox({
 function icon(t?: string) {
   const m: Record<string, string> = { info: "ℹ️", eta: "⏱️", risk: "⚠️", doc: "📄", broker: "🧑‍💼", photo: "🖼️" };
   return m[(t || "").toLowerCase()] ?? "";
+}
+
+type MilestoneLite = { key: string; status?: string | null; date?: string | null };
+function getLatestMilestoneStatus(
+  ordered: MilestoneLite[],
+  extras: MilestoneLite[]
+): { status: string | null; date: string | null } | null {
+  const all = [...ordered, ...extras].filter(
+    (x): x is MilestoneLite & { date: string } =>
+      typeof x.date === "string" && !Number.isNaN(Date.parse(x.date))
+  );
+
+  if (all.length === 0) return null;
+  all.sort((a, b) => Date.parse(b.date) - Date.parse(a.date));
+  // phần tử đầu tiên chắc chắn tồn tại sau check length
+  const first = all[0]!;
+  return { status: first.status ?? null, date: first.date ?? null };
 }

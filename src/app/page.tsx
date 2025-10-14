@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type { SearchRow } from "@/types";
 import { lruSearchGet, lruSearchSet } from "@/lib/cache";
@@ -9,6 +9,7 @@ import { lruSearchGet, lruSearchSet } from "@/lib/cache";
 function escapeReg(s: string) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
 function Highlight({ text, q }: { text?: string | null; q: string }) {
   if (!text) return null;
   if (!q || q.length < 2) return <>{text}</>;
@@ -27,21 +28,23 @@ function Highlight({ text, q }: { text?: string | null; q: string }) {
     </>
   );
 }
-const fmt = (v: any) => (v === null || v === undefined || v === "" ? "—" : String(v));
+
+// an toàn hơn any
+const fmt = (v: unknown) => (v === null || v === undefined || v === "" ? "—" : String(v));
 
 type SortBy = "ETD" | "ETA";
 type Dir = "ASC" | "DESC";
 
 /* ===== Page ===== */
 export default function Page() {
-  const [q, setQ] = useState("");
-  const [pol, setPol] = useState("ALL");
-  const [pod, setPod] = useState("ALL");
+  const [q, setQ] = useState<string>("");
+  const [pol, setPol] = useState<string>("ALL");
+  const [pod, setPod] = useState<string>("ALL");
   const [sortBy, setSortBy] = useState<SortBy>("ETD");
   const [dir, setDir] = useState<Dir>("DESC");
   const [rows, setRows] = useState<SearchRow[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [touched, setTouched] = useState(false);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [touched, setTouched] = useState<boolean>(false);
 
   const abortRef = useRef<AbortController | null>(null);
   const canSearch = useMemo(() => q.trim().length >= 2, [q]);
@@ -61,14 +64,22 @@ export default function Page() {
   }
 
   const polOptions = useMemo(() => {
-    const list = (rows as any[]).map((r) => String(r?.pol_aol ?? "").trim()).filter(Boolean);
-    return uniqueCaseInsensitive(list);
-  }, [rows]);
+  const list = rows
+    .map((r) =>
+      String((r as Record<string, unknown>)["pol_aol"] ?? "").trim()
+    )
+    .filter(Boolean);
+  return uniqueCaseInsensitive(list);
+}, [rows]);
 
-  const podOptions = useMemo(() => {
-    const list = (rows as any[]).map((r) => String(r?.pod_aod ?? "").trim()).filter(Boolean);
-    return uniqueCaseInsensitive(list);
-  }, [rows]);
+const podOptions = useMemo(() => {
+  const list = rows
+    .map((r) =>
+      String((r as Record<string, unknown>)["pod_aod"] ?? "").trim()
+    )
+    .filter(Boolean);
+  return uniqueCaseInsensitive(list);
+}, [rows]);
 
   function buildKey() {
     return JSON.stringify({
@@ -110,12 +121,15 @@ export default function Page() {
         cache: "no-store",
         signal: ac.signal,
       });
-      const json = await res.json();
+      const json: { ok: boolean; data?: SearchRow[] } = await res.json();
       const data = (json.data || []) as SearchRow[];
       setRows(data);
       lruSearchSet(key, data);
-    } catch (e: any) {
-      if (e?.name !== "AbortError") console.error("search error:", e);
+    } catch (e: unknown) {
+      if (!(e && typeof e === "object" && (e as { name?: string }).name === "AbortError")) {
+        // chỉ log nếu không phải AbortError
+        console.error("search error:", e);
+      }
     } finally {
       if (abortRef.current === ac) abortRef.current = null;
       setLoading(false);
@@ -148,7 +162,9 @@ export default function Page() {
       {/* Header */}
       <div className="header-row">
         <h1 className="title">End-to-End Visibility & Real-Time Tracking</h1>
-        <div className="total">Total: <b>{rows.length}</b></div>
+        <div className="total">
+          Total: <b>{rows.length}</b>
+        </div>
       </div>
 
       {/* Filter card */}
@@ -165,8 +181,16 @@ export default function Page() {
               </span>
               <input
                 value={q}
-                onChange={(e) => { setQ(e.target.value); setTouched(true); }}
-                onKeyDown={(e) => { if (e.key === "Enter") { setTouched(true); doSearch(); } }}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                  setQ(e.target.value);
+                  setTouched(true);
+                }}
+                onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+                  if (e.key === "Enter") {
+                    setTouched(true);
+                    void doSearch();
+                  }
+                }}
                 placeholder="Enter Shipment / Container / MBL / HBL / Tracking ID"
               />
             </div>
@@ -174,17 +198,37 @@ export default function Page() {
 
           <div className="field">
             <label>POL</label>
-            <select value={pol} onChange={(e) => { setPol(e.target.value); setTouched(true); }}>
+            <select
+              value={pol}
+              onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
+                setPol(e.target.value);
+                setTouched(true);
+              }}
+            >
               <option value="ALL">ALL</option>
-              {polOptions.map((v, i) => (<option key={`${v}-${i}`} value={v}>{v}</option>))}
+              {polOptions.map((v, i) => (
+                <option key={`${v}-${i}`} value={v}>
+                  {v}
+                </option>
+              ))}
             </select>
           </div>
 
           <div className="field">
             <label>POD</label>
-            <select value={pod} onChange={(e) => { setPod(e.target.value); setTouched(true); }}>
+            <select
+              value={pod}
+              onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
+                setPod(e.target.value);
+                setTouched(true);
+              }}
+            >
               <option value="ALL">ALL</option>
-              {podOptions.map((v, i) => (<option key={`${v}-${i}`} value={v}>{v}</option>))}
+              {podOptions.map((v, i) => (
+                <option key={`${v}-${i}`} value={v}>
+                  {v}
+                </option>
+              ))}
             </select>
           </div>
         </div>
@@ -194,16 +238,28 @@ export default function Page() {
           <div className="actions">
             <select
               value={sortBy}
-              onChange={(e) => { setSortBy(e.target.value as SortBy); setTouched(true); }}
+              onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
+                setSortBy(e.target.value as SortBy);
+                setTouched(true);
+              }}
               aria-label="Sort by"
             >
               <option value="ETD">Sort by ETD</option>
               <option value="ETA">Sort by ETA</option>
             </select>
-            <button type="button" className="btn btn-outline" onClick={() => { setDir((d) => d === "DESC" ? "ASC" : "DESC"); setTouched(true); }}>
+            <button
+              type="button"
+              className="btn btn-outline"
+              onClick={() => {
+                setDir((d) => (d === "DESC" ? "ASC" : "DESC"));
+                setTouched(true);
+              }}
+            >
               {dir}
             </button>
-            <button type="button" className="btn btn-dark" onClick={clearAll}>Clear</button>
+            <button type="button" className="btn btn-dark" onClick={clearAll}>
+              Clear
+            </button>
           </div>
           <div aria-hidden />
           <div aria-hidden />
@@ -238,30 +294,62 @@ export default function Page() {
 
                   {/* Rows */}
                   {rows.map((r, idx) => {
-                    const x = r as any;
+                    // cho phép đọc các field linh hoạt khác tên:
+                    const x = r as SearchRow & Record<string, unknown>;
+                    const sx = x as Record<string, unknown>;
                     return (
                       <div className="tr" key={idx}>
                         <div className="td td-actions td-sticky">
                           {/* ==== NÚT PREMIUM (đã thay class) ==== */}
-                          <Link href={`/shipment/${x.shipment_id || ""}`} className="btn-premium" title="View details" aria-label="View details">
-                            <svg className="btn-premium-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
-                              <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                              <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="2"/>
+                          <Link
+                            href={`/shipment/${x.shipment_id || ""}`}
+                            className="btn-premium"
+                            title="View details"
+                            aria-label="View details"
+                          >
+                            <svg
+                              className="btn-premium-ico"
+                              width="16"
+                              height="16"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              aria-hidden
+                            >
+                              <path
+                                d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                              <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="2" />
                             </svg>
                             <span className="btn-premium-txt">View</span>
                           </Link>
                         </div>
 
-                        <div className="td">{fmt(x.mode)}</div>
-                        <div className="td">{fmt(x.scope_of_service ?? x.scope_of_servie ?? x.scopeService ?? x.scope ?? x.service_scope)}</div>
-                        <div className="td"><Highlight text={fmt(x.mbl_number)} q={q} /></div>
-                        <div className="td"><Highlight text={fmt(x.hbl_number)} q={q} /></div>
-                        <div className="td">{fmt(x.pol_aol)}</div>
-                        <div className="td">{fmt(x.pod_aod)}</div>
-                        <div className="td">{fmt(x.etd_date)}</div>
-                        <div className="td">{fmt(x.atd_date)}</div>
-                        <div className="td">{fmt(x.eta_date)}</div>
-                        <div className="td">{fmt(x.ata_date)}</div>
+                        <div className="td">{fmt(sx["mode"])}</div>
+                        <div className="td">
+                          {fmt(
+                            sx["scope_of_service"] ??
+                              sx["scope_of_servie"] ??
+                              sx["scopeService"] ??
+                              sx["scope"] ??
+                              sx["service_scope"]
+                          )}
+                        </div>
+                        <div className="td">
+                          <Highlight text={fmt(sx["mbl_number"])} q={q} />
+                        </div>
+                        <div className="td">
+                          <Highlight text={fmt(sx["hbl_number"])} q={q} />
+                        </div>
+                        <div className="td">{fmt(sx["pol_aol"])}</div>
+                        <div className="td">{fmt(sx["pod_aod"])}</div>
+                        <div className="td">{fmt(sx["etd_date"])}</div>
+                        <div className="td">{fmt(sx["atd_date"])}</div>
+                        <div className="td">{fmt(sx["eta_date"])}</div>
+                        <div className="td">{fmt(sx["ata_date"])}</div>
                       </div>
                     );
                   })}
@@ -274,62 +362,256 @@ export default function Page() {
 
       {/* Styles */}
       <style jsx>{`
-        :root { --bg:#f4f6fb; --card:#fff; --text:#0f172a; --muted:#475569; --border:#cdd6e1; --ring:#2563eb33; }
+        :root {
+          --bg: #f4f6fb;
+          --card: #fff;
+          --text: #0f172a;
+          --muted: #475569;
+          --border: #cdd6e1;
+          --ring: #2563eb33;
+        }
 
-        .page { min-height:100vh; background:var(--bg); padding:28px 16px 64px; }
-        .header-row { display:flex; align-items:center; justify-content:space-between; max-width:1200px; margin:0 auto 12px; }
-        .title { margin:0; font-size:28px; font-weight:800; color:var(--text); }
-        .total { font-size:12px; color:#334155; background:#eef2ff; padding:6px 10px; border-radius:999px; border:1px solid #dbeafe; font-weight:700; }
+        .page {
+          min-height: 100vh;
+          background: var(--bg);
+          padding: 28px 16px 64px;
+        }
+        .header-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          max-width: 1200px;
+          margin: 0 auto 12px;
+        }
+        .title {
+          margin: 0;
+          font-size: 28px;
+          font-weight: 800;
+          color: var(--text);
+        }
+        .total {
+          font-size: 12px;
+          color: #334155;
+          background: #eef2ff;
+          padding: 6px 10px;
+          border-radius: 999px;
+          border: 1px solid #dbeafe;
+          font-weight: 700;
+        }
 
-        .filter-card { max-width:1200px; margin:0 auto; background:linear-gradient(180deg,#ffffff,#f7f9fc); border:1px solid #e6eaf2; border-radius:16px; padding:16px; box-shadow:0 10px 28px rgba(15,23,42,.06); }
-        .row { display:grid; grid-template-columns:1fr 300px 300px; gap:16px; }
-        .row-top { margin-bottom:14px; }
+        .filter-card {
+          max-width: 1200px;
+          margin: 0 auto;
+          background: linear-gradient(180deg, #ffffff, #f7f9fc);
+          border: 1px solid #e6eaf2;
+          border-radius: 16px;
+          padding: 16px;
+          box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
+        }
+        .row {
+          display: grid;
+          grid-template-columns: 1fr 300px 300px;
+          gap: 16px;
+        }
+        .row-top {
+          margin-bottom: 14px;
+        }
 
-        .field { display:flex; flex-direction:column; }
-        .field label { font-size:12px; color:#6b7280; margin-bottom:6px; font-weight:700; letter-spacing:.06em; }
-        .field input, .field select { height:40px; border:1.5px solid #9aa7b8; border-radius:10px; background:#fff; color:#0f172a; padding:8px 12px; font-size:14px; outline:none; width:100%; box-sizing:border-box; transition: box-shadow .15s, border-color .15s; }
-        .field input:focus, .field select:focus { border-color:#64748b; box-shadow:0 0 0 3px var(--ring); }
+        .field {
+          display: flex;
+          flex-direction: column;
+        }
+        .field label {
+          font-size: 12px;
+          color: #6b7280;
+          margin-bottom: 6px;
+          font-weight: 700;
+          letter-spacing: 0.06em;
+        }
+        .field input,
+        .field select {
+          height: 40px;
+          border: 1.5px solid #9aa7b8;
+          border-radius: 10px;
+          background: #fff;
+          color: #0f172a;
+          padding: 8px 12px;
+          font-size: 14px;
+          outline: none;
+          width: 100%;
+          box-sizing: border-box;
+          transition: box-shadow 0.15s, border-color 0.15s;
+        }
+        .field input:focus,
+        .field select:focus {
+          border-color: #64748b;
+          box-shadow: 0 0 0 3px var(--ring);
+        }
 
-        .search-wrap { position:relative; }
-        .icon { position:absolute; left:12px; top:50%; transform:translateY(-50%); color:#6b7280; }
-        .search-wrap input { padding-left:38px; }
+        .search-wrap {
+          position: relative;
+        }
+        .icon {
+          position: absolute;
+          left: 12px;
+          top: 50%;
+          transform: translateY(-50%);
+          color: #6b7280;
+        }
+        .search-wrap input {
+          padding-left: 38px;
+        }
 
-        .actions { display:flex; align-items:center; gap:10px; }
-        .actions select { width:150px; height:38px; border-radius:8px; border:1.5px solid #9aa7b8; background:#fff; }
-        .btn { height:38px; padding:0 14px; border-radius:999px; font-weight:800; font-size:13px; cursor:pointer; border:1.5px solid #1e293b; transition:all .15s ease; }
-        .btn.btn-outline { background:#fff; color:#0f172a; }
-        .btn.btn-dark { background:#0f172a; color:#fff; border-color:#0f172a; }
+        .actions {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+        .actions select {
+          width: 150px;
+          height: 38px;
+          border-radius: 8px;
+          border: 1.5px solid #9aa7b8;
+          background: #fff;
+        }
+        .btn {
+          height: 38px;
+          padding: 0 14px;
+          border-radius: 999px;
+          font-weight: 800;
+          font-size: 13px;
+          cursor: pointer;
+          border: 1.5px solid #1e293b;
+          transition: all 0.15s ease;
+        }
+        .btn.btn-outline {
+          background: #fff;
+          color: #0f172a;
+        }
+        .btn.btn-dark {
+          background: #0f172a;
+          color: #fff;
+          border-color: #0f172a;
+        }
 
         /* ===== Table ===== */
-        .table-wrap { max-width:1200px; margin:16px auto 0; }
-        .table-scroll { border:1px solid #e6eaf2; border-radius:16px; background:#fff; overflow-x:auto; position:relative; box-shadow:0 12px 28px rgba(15,23,42,.05); }
-        .table { min-width:1280px; position:relative; }
-        .tr { display:grid; grid-template-columns:80px 90px 180px 160px 140px 120px 120px 110px 110px 110px 110px; column-gap:16px; align-items:center; padding:12px 14px; }
-        .tr.th { position:sticky; top:0; z-index:2; background:#fff; border-bottom:1px solid #e9edf5; }
-        .tr.th .td { font-weight:800; color:#475569; font-size:13px; letter-spacing:.04em; text-transform:uppercase; }
-        .td { font-size:14px; color:#0f172a; }
-        .td-actions { display:flex; align-items:center; }
-        .td-sticky { position:sticky; left:0; z-index:3; background:#fff; }
-        .tr.th .td-sticky { z-index:4; background:#fff; }
-        .td-sticky::after { content:""; position:absolute; top:0; right:-8px; width:8px; height:100%; box-shadow:6px 0 10px rgba(15,23,42,.06); pointer-events:none; }
-        .table .tr + .tr { border-top:1px solid #eef2f7; }
-        .table .tr:not(.th):hover { background:#f9fbff; }
+        .table-wrap {
+          max-width: 1200px;
+          margin: 16px auto 0;
+        }
+        .table-scroll {
+          border: 1px solid #e6eaf2;
+          border-radius: 16px;
+          background: #fff;
+          overflow-x: auto;
+          position: relative;
+          box-shadow: 0 12px 28px rgba(15, 23, 42, 0.05);
+        }
+        .table {
+          min-width: 1280px;
+          position: relative;
+        }
+        .tr {
+          display: grid;
+          grid-template-columns: 80px 90px 180px 160px 140px 120px 120px 110px 110px 110px 110px;
+          column-gap: 16px;
+          align-items: center;
+          padding: 12px 14px;
+        }
+        .tr.th {
+          position: sticky;
+          top: 0;
+          z-index: 2;
+          background: #fff;
+          border-bottom: 1px solid #e9edf5;
+        }
+        .tr.th .td {
+          font-weight: 800;
+          color: #475569;
+          font-size: 13px;
+          letter-spacing: 0.04em;
+          text-transform: uppercase;
+        }
+        .td {
+          font-size: 14px;
+          color: #0f172a;
+        }
+        .td-actions {
+          display: flex;
+          align-items: center;
+        }
+        .td-sticky {
+          position: sticky;
+          left: 0;
+          z-index: 3;
+          background: #fff;
+        }
+        .tr.th .td-sticky {
+          z-index: 4;
+          background: #fff;
+        }
+        .td-sticky::after {
+          content: "";
+          position: absolute;
+          top: 0;
+          right: -8px;
+          width: 8px;
+          height: 100%;
+          box-shadow: 6px 0 10px rgba(15, 23, 42, 0.06);
+          pointer-events: none;
+        }
+        .table .tr + .tr {
+          border-top: 1px solid #eef2f7;
+        }
+        .table .tr:not(.th):hover {
+          background: #f9fbff;
+        }
 
         /* ===== Premium View button ===== */
-        .btn-premium{
-          --grad-a:#ffffff; --grad-b:#f4f7ff; --stroke:rgba(15,23,42,.18); --glow:rgba(59,130,246,.35);
-          display:inline-flex; align-items:center; gap:8px; height:30px; padding:0 12px;
-          border-radius:999px; background:linear-gradient(180deg,var(--grad-a),var(--grad-b));
-          border:1px solid var(--stroke); color:#0f172a; text-decoration:none; font-weight:800; letter-spacing:.02em;
-          box-shadow:inset 0 1px 0 rgba(255,255,255,.9), 0 8px 20px rgba(15,23,42,.08);
-          transition:transform .12s ease, box-shadow .18s ease, border-color .18s ease; backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
+        .btn-premium {
+          --grad-a: #ffffff;
+          --grad-b: #f4f7ff;
+          --stroke: rgba(15, 23, 42, 0.18);
+          --glow: rgba(59, 130, 246, 0.35);
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          height: 30px;
+          padding: 0 12px;
+          border-radius: 999px;
+          background: linear-gradient(180deg, var(--grad-a), var(--grad-b));
+          border: 1px solid var(--stroke);
+          color: #0f172a;
+          text-decoration: none;
+          font-weight: 800;
+          letter-spacing: 0.02em;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 8px 20px rgba(15, 23, 42, 0.08);
+          transition: transform 0.12s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+          backdrop-filter: blur(6px);
+          -webkit-backdrop-filter: blur(6px);
         }
-        .btn-premium-ico{ filter:drop-shadow(0 1px 0 rgba(255,255,255,.7)); }
-        .btn-premium:hover{ transform:translateY(-1px); box-shadow:inset 0 1px 0 rgba(255,255,255,1), 0 12px 26px rgba(15,23,42,.12), 0 0 0 4px var(--glow); border-color:rgba(15,23,42,.25); }
-        .btn-premium:active{ transform:translateY(0); box-shadow:inset 0 1px 0 rgba(255,255,255,.95), 0 8px 18px rgba(15,23,42,.12), 0 0 0 3px var(--glow); }
-        .btn-premium:focus-visible{ outline:none; box-shadow:inset 0 1px 0 rgba(255,255,255,.95), 0 0 0 3px rgba(255,255,255,.85), 0 0 0 5px var(--glow); }
+        .btn-premium-ico {
+          filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.7));
+        }
+        .btn-premium:hover {
+          transform: translateY(-1px);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 1), 0 12px 26px rgba(15, 23, 42, 0.12), 0 0 0 4px var(--glow);
+          border-color: rgba(15, 23, 42, 0.25);
+        }
+        .btn-premium:active {
+          transform: translateY(0);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 8px 18px rgba(15, 23, 42, 0.12), 0 0 0 3px var(--glow);
+        }
+        .btn-premium:focus-visible {
+          outline: none;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 0 0 3px rgba(255, 255, 255, 0.85), 0 0 0 5px var(--glow);
+        }
 
-        .hl { background:#fff1a6; padding:0 2px; border-radius:3px; }
+        .hl {
+          background: #fff1a6;
+          padding: 0 2px;
+          border-radius: 3px;
+        }
       `}</style>
     </main>
   );

@@ -48,7 +48,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   const token = req.headers.get("x-admin-token");
-  if (!token || token !== process.env.ADMIN_TOKEN) {
+  if (!token || token !== process.env["ADMIN_TOKEN"]) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
@@ -78,7 +78,7 @@ export async function POST(req: NextRequest) {
 
   if (msNotes.length > 0) {
     const ids = Array.from(
-      new Set(msNotes.map((r) => String((r as RowObject).shipment_id ?? "")).filter(Boolean))
+      new Set(msNotes.map((r) => String((r as RowObject)["shipment_id"] ?? "")).filter(Boolean))
     );
     if (ids.length > 0) {
       const { error: delErr } = await supabase.from("milestones_notes").delete().in("shipment_id", ids);
