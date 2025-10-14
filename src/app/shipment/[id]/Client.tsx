@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { supabaseClient } from "@/lib/supabaseClient";
+import { cacheGetDetail, cacheSetDetail, dedupe } from "@/lib/cache";
 import type { Shipment, InputSea, InputAir, MilestoneAny, Note } from "@/types";
 
+/* ================= Types & fetch ================= */
 type Detail = {
   shipment: Shipment;
   input_sea: InputSea[];
@@ -12,39 +14,69 @@ type Detail = {
   notes: Note[];
 };
 
-async function fetchDetail(id: string): Promise<Detail | null> {
+async function fetchDetailOnce(id: string): Promise<Detail | null> {
   const res = await fetch(`/api/detail/${id}`, { cache: "no-store" });
   if (!res.ok) return null;
   const json = await res.json();
   return json.data as Detail;
 }
 
-// ===== Label mapping =====
+// fetch có de-dupe theo id (tránh bấm nhanh nhiều nơi cùng fetch)
+function fetchDetail(id: string) {
+  return dedupe<Detail | null>(`detail:${id}`, () => fetchDetailOnce(id));
+}
+
+/* ================= Labels ================= */
 const SEA_STEPS: Record<string, string> = {
   step1: "Pickup at Shipper",
-  step2: "Received at Origin WH/CY",
+  step2: "Received at Origin Warehouse / CY",
   step3: "Export Customs Clearance",
-  step4: "Place of Receipt",
+  step4: "Port of Receipt (if different)",
   step5: "Port of Loading (POL)",
   step6: "Transshipment Port(s)",
   step7: "Port of Discharge (POD)",
   step8: "Import Customs Clearance",
-  step9: "Place of Delivery",
-  step10: "Final Delivery",
+  step9: "Place of Delivery (if different)",
+  step10: "Final Delivery to Consignee",
 };
-
 const AIR_STEPS: Record<string, string> = {
-  step1: "Pickup",
-  step2: "Received at Origin WH/CY",
+  step1: "Pickup at Shipper",
+  step2: "Received at Origin Warehouse / CY",
   step3: "Export Customs Clearance",
   step4: "Airport of Loading (AOL)",
   step5: "Transit Airport(s)",
   step6: "Airport of Destination (AOD)",
   step7: "Import Customs Clearance",
-  step8: "Final Delivery",
+  step8: "Final Delivery to Consignee",
+};
+const EXTRA_STEPS_SEA: Record<string, string> = {
+  "step6.1": "(Optional) Extra Transshipment",
+  "step6.2": "(Optional) Extra Transshipment",
+  "step6.3": "(Optional) Extra Transshipment",
+  step6_1: "(Optional) Extra Transshipment",
+  step6_2: "(Optional) Extra Transshipment",
+  step6_3: "(Optional) Extra Transshipment",
+};
+const EXTRA_STEPS_AIR: Record<string, string> = {
+  "step5.1": "(Optional) Extra Transshipment",
+  "step5.2": "(Optional) Extra Transshipment",
+  "step5.3": "(Optional) Extra Transshipment",
+  "step5.4": "(Optional) Extra Transshipment",
+  step5_1: "(Optional) Extra Transshipment",
+  step5_2: "(Optional) Extra Transshipment",
+  step5_3: "(Optional) Extra Transshipment",
+  step5_4: "(Optional) Extra Transshipment",
 };
 
-// ===== Helpers =====
+/* ================= Helpers ================= */
+function normalizeStepKey(raw: string | number | null | undefined): string {
+  const s = String(raw ?? "").trim();
+  if (!s) return "step?";
+  if (/^\d+(\.|_)?\d*$/.test(s)) return `step${s.replace("_", ".")}`;
+  if (s.startsWith("step")) return s.replace("_", ".");
+  return s;
+}
+
 function groupMilestones(ms: MilestoneAny | null) {
   if (!ms) {
     return {
@@ -52,20 +84,17 @@ function groupMilestones(ms: MilestoneAny | null) {
       extras: [] as { key: string; status?: string | null; date?: string | null }[],
     };
   }
-
-  const obj = ms as Record<string, unknown>;
-  const entries = Object.entries(obj).filter(
-    ([k]) => k !== "shipment_id" && k !== "created_at"
-  );
+  const obj = ms as Record<string, string | null | undefined>;
+  const entries = Object.entries(obj).filter(([k]) => k !== "shipment_id" && k !== "created_at");
 
   const map: Record<string, { status?: string | null; date?: string | null }> = {};
   const extras: { key: string; status?: string | null; date?: string | null }[] = [];
 
   for (const [k, v] of entries) {
-    const base = k.split("_")[0]; // step1, step5.1 ...
-    map[base] ||= {};
-    if (k.endsWith("_status")) map[base].status = (v as string) || null;
-    if (k.endsWith("_date"))   map[base].date   = (v as string) || null;
+    const base = normalizeStepKey(k.split("_")[0]);
+    if (!map[base]) map[base] = {};
+    if (k.endsWith("_status")) map[base].status = (v ?? null) as string | null;
+    if (k.endsWith("_date")) map[base].date = (v ?? null) as string | null;
   }
 
   for (const base of Object.keys(map)) {
@@ -88,76 +117,106 @@ function groupMilestones(ms: MilestoneAny | null) {
   return { ordered, extras };
 }
 
-function Field({ label, value }: { label: string; value: unknown }) {
-  if (value === null || value === undefined || value === "") return null;
-  return (
-    <div style={{ display: "flex", gap: 6 }}>
-      <div style={{ minWidth: 120, color: "#555" }}>{label}:</div>
-      <div>{String(value)}</div>
-    </div>
-  );
-}
-
-function badgeColor(status?: string | null) {
-  const s = (status || "").toLowerCase();
-  if (s.includes("deliver")) return { bg: "#e6ffed", border: "#b7eb8f", color: "#237804" }; // delivered
-  if (s.includes("in transit") || s.includes("transit")) return { bg: "#e6f7ff", border: "#91d5ff", color: "#0050b3" }; // in transit
-  if (s.includes("delay") || s.includes("hold")) return { bg: "#fff1f0", border: "#ffa39e", color: "#a8071a" }; // delay
-  return { bg: "#f5f5f5", border: "#d9d9d9", color: "#595959" };
-}
-
-function Progress({ steps, completed }: { steps: number; completed: number }) {
-  const pct = Math.min(100, Math.round((completed / Math.max(1, steps)) * 100));
-  return (
-    <div style={{ marginTop: 8 }}>
-      <div style={{ height: 8, background: "#f0f0f0", borderRadius: 999 }}>
-        <div style={{ width: `${pct}%`, height: 8, background: "#1677ff", borderRadius: 999 }} />
-      </div>
-      <div style={{ marginTop: 4, fontSize: 12, color: "#555" }}>{completed}/{steps} steps</div>
-    </div>
-  );
-}
-
-/** Đọc chuỗi an toàn theo key (tránh any, tránh lỗi thiếu field trong type) */
 function readString(obj: unknown, key: string): string | null {
-  if (obj && typeof obj === "object" && key in (obj as Record<string, unknown>)) {
-    const v = (obj as Record<string, unknown>)[key];
-    return typeof v === "string" ? v : null;
-  }
-  return null;
+  if (!obj || typeof obj !== "object") return null;
+  const rec = obj as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(rec, key)) return null;
+  const v = rec[key];
+  return typeof v === "string" ? v : null;
 }
 
+function formatYMD(d?: string | null): string {
+  if (!d) return "—";
+  if (/^\d{4}-\d{2}-\d{2}/.test(d)) return d.slice(0, 10);
+  return d;
+}
+
+function groupNotesByStep(notes: Note[]): Record<string, Note[]> {
+  const map: Record<string, Note[]> = {};
+  for (const n of notes) {
+    const key = normalizeStepKey((n as any)?.step);
+    (map[key] ||= []).push(n);
+  }
+  for (const k of Object.keys(map)) {
+    map[k].sort((a, b) => {
+      const da = Date.parse(String((a as any).note_time ?? 0));
+      const db = Date.parse(String((b as any).note_time ?? 0));
+      return db - da;
+    });
+  }
+  return map;
+}
+
+function getLatestMilestoneStatus(
+  ordered: { key: string; status?: string | null; date?: string | null }[],
+  extras: { key: string; status?: string | null; date?: string | null }[]
+) {
+  const all = [...ordered, ...extras].filter((x) => x.date && !Number.isNaN(Date.parse(String(x.date))));
+  if (all.length === 0) return null;
+  all.sort((a, b) => Date.parse(String(b.date)) - Date.parse(String(a.date)));
+  return { status: all[0].status ?? null, date: all[0].date ?? null };
+}
+
+const STEP_EXTRA_FIELD: Record<"SEA" | "AIR", Record<string, keyof Shipment>> = {
+  SEA: { step4: "place_of_receipt", step5: "pol_aol", step7: "pod_aod", step9: "place_of_delivery" },
+  AIR: { step4: "pol_aol", step6: "pod_aod" },
+};
+function getStepExtraValue(mode: string | undefined, stepKey: string, s: Shipment): string | null {
+  const m = (mode === "SEA" ? "SEA" : "AIR") as "SEA" | "AIR";
+  const baseKey = normalizeStepKey(stepKey).split(".")[0];
+  const field = STEP_EXTRA_FIELD[m][baseKey as keyof typeof STEP_EXTRA_FIELD["SEA"]];
+  if (!field) return null;
+  const val = (s as any)?.[field];
+  if (val == null) return null;
+  const str = String(val).trim();
+  return str || null;
+}
+
+/* ================= MAIN ================= */
 export default function ShipmentClient({ id }: { id: string }) {
+  // ---- Hooks luôn chạy (đặt sớm, trước mọi early-return) ----
+  const liRefs = useRef<Record<string, HTMLLIElement | null>>({});
+  const [highlight, setHighlight] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
+  const stickyRef = useRef<HTMLDivElement | null>(null);
+  // -----------------------------------------------------------
+
   const [data, setData] = useState<Detail | null>(null);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
 
-  const stepsMap = useMemo(
-    () => (data?.shipment.mode === "SEA" ? SEA_STEPS : AIR_STEPS),
-    [data?.shipment.mode]
-  );
-
-  async function copyLink() {
-    const link = `${location.origin}/shipment/${id}`;
-    await navigator.clipboard.writeText(link);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1200);
-  }
-
-  // Fetch ban đầu
+  // ===== 1) Đọc cache ngay lập tức (mở lần 2 sẽ hiển thị tức thì)
   useEffect(() => {
-    let alive = true;
-    setLoading(true);
-    fetchDetail(id).then((d) => {
-      if (alive) {
-        setData(d);
-        setLoading(false);
-      }
-    });
-    return () => { alive = false; };
+    const cached = cacheGetDetail<Detail>(id);
+    if (cached) {
+      setData(cached);
+      setLoading(false); // hiển thị ngay từ cache
+    } else {
+      setLoading(true);
+    }
   }, [id]);
 
-  // Realtime subscribe
+  // ===== 2) Refetch nền để làm tươi (dù có cache vẫn gọi nền)
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const fresh = await fetchDetail(id);
+      if (alive && fresh) {
+        cacheSetDetail(id, fresh);
+        setData(fresh);
+        setLoading(false);
+      } else if (alive && fresh === null && !data) {
+        setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+    // cố tình không phụ thuộc `data` để lần nào vào cũng refetch nền
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  // ===== 3) Debounce realtime: gộp nhiều event trong ~800ms rồi refetch 1 lần
   useEffect(() => {
     const channel = supabaseClient.channel(`ship-${id}`);
     const tables = [
@@ -168,24 +227,94 @@ export default function ShipmentClient({ id }: { id: string }) {
       { table: "milestones_air", filter: `shipment_id=eq.${id}` },
       { table: "milestones_notes", filter: `shipment_id=eq.${id}` },
     ];
+
+    let timer: any = null;
+    let pending = false;
+    const scheduleRefetch = () => {
+      pending = true;
+      if (timer) return; // đã có timer → đợi gộp
+      timer = setTimeout(async () => {
+        timer = null;
+        if (!pending) return;
+        pending = false;
+        const fresh = await fetchDetail(id);
+        if (fresh) {
+          cacheSetDetail(id, fresh);
+          setData(fresh);
+        }
+      }, 800); // cửa sổ debounce
+    };
+
     for (const t of tables) {
       channel.on(
         "postgres_changes",
         { event: "*", schema: "public", table: t.table, filter: t.filter },
-        async () => {
-          const fresh = await fetchDetail(id);
-          if (fresh) setData(fresh);
-        }
+        scheduleRefetch
       );
     }
     channel.subscribe();
-    return () => { supabaseClient.removeChannel(channel); };
+
+    return () => {
+      if (timer) clearTimeout(timer);
+      supabaseClient.removeChannel(channel);
+    };
   }, [id]);
 
+  const stepsMap = useMemo(() => {
+    const isSea = data?.shipment?.mode === "SEA";
+    const base = isSea ? SEA_STEPS : AIR_STEPS;
+    const extra = isSea ? EXTRA_STEPS_SEA : EXTRA_STEPS_AIR;
+    return { ...base, ...extra };
+  }, [data?.shipment?.mode]);
+
+  const notesByStep = useMemo(() => groupNotesByStep(data?.notes ?? []), [data?.notes]);
+
+  /* ========= Loading (Skeleton premium) ========= */
   if (loading || !data) {
     return (
-      <main style={{ padding: 24 }}>
-        <h1>Đang tải shipment {id}...</h1>
+      <main style={{ padding: 24, maxWidth: 980, margin: "0 auto" }}>
+        <div className="sktWrap">
+          <div className="sktHeader">
+            <div className="sktLogo" />
+            <div className="sktTitle" />
+          </div>
+
+          <div className="sktRow">
+            <div className="sktCard" />
+            <div className="sktCard" />
+            <div className="sktCard" />
+          </div>
+
+          <div className="sktProgress">
+            <div className="sktBar" />
+          </div>
+
+          <div className="sktTable">
+            <div className="sktTh" />
+            <div className="sktTr" />
+            <div className="sktTr" />
+            <div className="sktTr" />
+          </div>
+        </div>
+
+        <style jsx>{`
+          .sktWrap{display:flex;flex-direction:column;gap:18px}
+          .sktHeader{display:flex;align-items:center;gap:12px}
+          .sktLogo{width:36px;height:36px;border-radius:10px;background:linear-gradient(90deg,#eef2f7 25%,#f7f9fc 37%,#eef2f7 63%);background-size:400px 100%;animation:shimmer 1.4s infinite}
+          .sktTitle{flex:1;height:22px;border-radius:8px;background:linear-gradient(90deg,#eef2f7 25%,#f7f9fc 37%,#eef2f7 63%);background-size:400px 100%;animation:shimmer 1.4s infinite}
+          .sktRow{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
+          .sktCard{height:96px;border-radius:14px;background:linear-gradient(90deg,#eef2f7 25%,#f7f9fc 37%,#eef2f7 63%);background-size:400px 100%;animation:shimmer 1.4s infinite}
+          .sktProgress{height:16px;border-radius:999px;overflow:hidden;background:#ecf0f6}
+          .sktBar{height:100%;width:40%;border-radius:999px;background:linear-gradient(90deg,#dbeafe,#e0f2fe,#dbeafe);animation:loadbar 1.6s infinite}
+          .sktTable{border:1px solid #e6eaf2;border-radius:16px;padding:12px;background:#fff;box-shadow:0 10px 28px rgba(15,23,42,.05)}
+          .sktTh{height:18px;border-radius:8px;background:linear-gradient(90deg,#eef2f7 25%,#f7f9fc 37%,#eef2f7 63%);background-size:400px 100%;animation:shimmer 1.4s infinite;margin-bottom:10px}
+          .sktTr{height:46px;border-radius:10px;background:linear-gradient(90deg,#eef2f7 25%,#f7f9fc 37%,#eef2f7 63%);background-size:400px 100%;animation:shimmer 1.4s infinite}
+          .sktTr + .sktTr{margin-top:8px}
+          @keyframes shimmer{0%{background-position:-200px 0}100%{background-position:200px 0}}
+          @keyframes loadbar{0%{transform:translateX(-40%)}100%{transform:translateX(120%)}
+          }
+          @media (max-width:860px){.sktRow{grid-template-columns:1fr}}
+        `}</style>
       </main>
     );
   }
@@ -193,143 +322,598 @@ export default function ShipmentClient({ id }: { id: string }) {
   const { ordered, extras } = groupMilestones(data.milestones);
   const s = data.shipment;
 
-  const completedCount = ordered.filter(
-    (o) =>
-      !!o.date ||
-      (o.status || "").toLowerCase().includes("done") ||
-      (o.status || "").toLowerCase().includes("complete")
-  ).length;
+  // ===== Progress state =====
+  const isDone = (o: { status?: string | null; date?: string | null }) => {
+    const st = (o.status || "").toLowerCase();
+    return !!o.date || st.includes("done") || st.includes("complete");
+  };
+  const firstTodoIdx = ordered.findIndex((o) => !isDone(o));
+  const currentIdx = firstTodoIdx === -1 ? Math.max(0, ordered.length - 1) : firstTodoIdx;
+  const percent = Math.min(100, Math.round(((currentIdx + 1) / Math.max(1, ordered.length)) * 100));
 
-  // Đọc status theo nhiều khả năng tên cột (status/current_status/shipment_status/state)
-  const shipmentStatus =
+  const shipmentStatusFallback =
     readString(s, "status") ??
     readString(s, "current_status") ??
     readString(s, "shipment_status") ??
     readString(s, "state");
 
-  const badge = badgeColor(shipmentStatus);
+  const latest = getLatestMilestoneStatus(ordered, extras);
+  const effectiveStatus =
+    latest?.status && latest.date ? `${latest.status} (${formatYMD(latest.date)})` : shipmentStatusFallback || "N/A";
+
+  const tsHas = s.transshipment_ports !== undefined && s.transshipment_ports !== null;
+  const tsDisplay = tsHas ? String(s.transshipment_ports || "").trim() || "Yes" : "No";
+
+  /* ====== Build display list ====== */
+  type ExtraChild = { label: string; date?: string | null; status?: string | null };
+  type DispStep = {
+    id: string;
+    label: string;
+    location?: string | null;
+    code?: string | null;
+    status: "done" | "current" | "pending";
+    statusText: string;
+    notes: Note[];
+    children?: ExtraChild[];
+  };
+
+  const baseMap = data.shipment.mode === "SEA" ? SEA_STEPS : AIR_STEPS;
+  const transitKey = data.shipment.mode === "SEA" ? "step6" : "step5";
+
+  function mkStatusText(st?: string | null, dt?: string | null) {
+    const sst = (st || "").toLowerCase();
+    if (sst.includes("in-transit") || sst.includes("in transit")) return `In-Transit (${formatYMD(dt)})`;
+    if (sst.includes("planned") || sst.includes("pending")) return dt ? `Planned (${formatYMD(dt)})` : "Pending";
+    if (sst.includes("done") || sst.includes("complete") || dt) return `Done (${formatYMD(dt)})`;
+    return "N/A";
+  }
+  function mkState(idx: number, st?: string | null): DispStep["status"] {
+    if (idx < currentIdx) return "done";
+    if (idx === currentIdx && !(st || "").toLowerCase().includes("done")) return "current";
+    return "pending";
+  }
+
+  const childrenForTransit: ExtraChild[] | undefined =
+    extras.length > 0
+      ? extras.map((ex) => ({
+          label:
+            (data.shipment.mode === "SEA" ? EXTRA_STEPS_SEA[ex.key] : EXTRA_STEPS_AIR[ex.key]) ||
+            "(Optional) Extra Transshipment",
+          date: ex.date ?? null,
+          status: ex.status ?? null,
+        }))
+      : undefined;
+
+  const dispSteps: DispStep[] = ordered.map((st, idx) => {
+    const label = baseMap[st.key] ?? st.key.toUpperCase();
+    const extraVal = getStepExtraValue(s.mode, st.key, s);
+    const loc = extraVal || null;
+    const code =
+      st.key === "step5" && s.pol_aol ? String(s.pol_aol) : st.key === "step7" && s.pod_aod ? String(s.pod_aod) : null;
+    const state = mkState(idx, st.status);
+    const txt = mkStatusText(st.status, st.date);
+    const nlist = notesByStep[st.key] || [];
+    return {
+      id: st.key,
+      label,
+      location: loc,
+      code,
+      status: state,
+      statusText: txt,
+      notes: nlist,
+      ...(st.key === transitKey && childrenForTransit ? { children: childrenForTransit } : {}),
+    };
+  });
+
+  /* ===== Scroll / Highlight ===== */
+  const visibleSteps = showAll
+    ? dispSteps
+    : dispSteps.filter(
+        (d) =>
+          (ordered.find((o) => o.key === d.id)?.date ?? null) &&
+          (ordered.find((o) => o.key === d.id)?.status ?? null)
+      );
+  const hiddenCount = dispSteps.length - visibleSteps.length;
+
+  const getRef = (id: string) => (el: HTMLLIElement | null) => {
+    liRefs.current[id] = el;
+  };
+
+  const scrollWithOffset = (el: HTMLElement) => {
+    const offset = (stickyRef.current?.offsetHeight ?? 0) + 12;
+    const top = el.getBoundingClientRect().top + window.scrollY - offset;
+    window.scrollTo({ top, behavior: "smooth" });
+  };
+
+  const jumpTo = (id: string) => {
+    const el = liRefs.current[id];
+    if (el) {
+      scrollWithOffset(el);
+      setHighlight(id);
+      setTimeout(() => setHighlight((c) => (c === id ? null : c)), 1600);
+    } else {
+      setShowAll(true);
+      setTimeout(() => {
+        const e2 = liRefs.current[id];
+        if (e2) {
+          scrollWithOffset(e2);
+          setHighlight(id);
+          setTimeout(() => setHighlight((c) => (c === id ? null : c)), 1600);
+        }
+      }, 60);
+    }
+  };
 
   return (
     <main style={{ padding: 24, maxWidth: 980, margin: "0 auto" }}>
-      {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-        <h1 style={{ margin: 0 }}>Shipment {s.shipment_id} — {s.mode}</h1>
+        <h1 style={{ margin: 0 }}>
+          Shipment {s.shipment_id} — {s.mode}
+        </h1>
+
+        {/* ĐÃ BỎ STATUS Ở HEADER — chỉ còn nút Copy link */}
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span
-            style={{
-              padding: "4px 10px",
-              borderRadius: 999,
-              background: badge.bg,
-              color: badge.color,
-              border: `1px solid ${badge.border}`,
-              fontSize: 13,
-            }}
-          >
-            {shipmentStatus || "N/A"}
-          </span>
           <button
-            onClick={copyLink}
-            style={{
-              padding: "6px 10px",
-              borderRadius: 8,
-              border: "1px solid #ddd",
-              background: "#fff",
+            onClick={async () => {
+              const link = `${location.origin}/shipment/${id}`;
+              await navigator.clipboard.writeText(link);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1200);
             }}
+            className="copyBtn"
           >
             {copied ? "Đã copy ✅" : "Copy link"}
           </button>
         </div>
       </div>
 
-      {/* Summary grid */}
-      <section style={{ marginTop: 16, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <div style={{ padding: 12, border: "1px solid #eee", borderRadius: 12 }}>
-          <h3 style={{ marginTop: 0 }}>Thông tin chung</h3>
-          <Field label="Tracking" value={s.tracking_id} />
-          <Field label="MBL" value={s.mbl_number} />
-          <Field label="HBL" value={s.hbl_number} />
-          <Field label="Carrier" value={s.carrier} />
-          <Field label="ETD" value={s.etd_date} />
-          <Field label="ATD" value={s.atd_date} />
-          <Field label="ETA" value={s.eta_date} />
-          <Field label="ATA" value={s.ata_date} />
-          <Field label="POR" value={s.place_of_receipt} />
-          <Field label="POL/AOL" value={s.pol_aol} />
-          <Field label="TS Ports" value={s.transshipment_ports} />
-          <Field label="POD/AOD" value={s.pod_aod} />
-          <Field label="PODelivery" value={s.place_of_delivery} />
-          <Field label="Route" value={s.route} />
-          <Field label="Remarks" value={s.remarks} />
+      {/* Info */}
+      <section className="infoCard">
+        <div className="grid2">
+          <KVT k="Tracking" v={<span style={{ fontSize: 15, fontWeight: 600 }}>{s.tracking_id ?? "—"}</span>} />
+          <div className="statusRow">
+            <span className="statusLbl">Status</span>
+            {/* Ô status xanh lá nhạt */}
+            <span className="statusPill">{effectiveStatus}</span>
+          </div>
         </div>
-
-        <div style={{ padding: 12, border: "1px solid #eee", borderRadius: 12 }}>
-          <h3 style={{ marginTop: 0 }}>Tiến độ</h3>
-          <Progress steps={ordered.length || 1} completed={completedCount} />
-          <ul style={{ marginTop: 12 }}>
-            {ordered.map(({ key, status, date }) => (
-              <li key={key} style={{ marginBottom: 6 }}>
-                <b>{(stepsMap[key] ?? key.toUpperCase())}</b> — {status ?? "N/A"}{date ? ` (${date})` : ""}
-              </li>
-            ))}
-          </ul>
-          {extras.length > 0 && (
-            <>
-              <h4 style={{ marginTop: 8 }}>Transshipment</h4>
-              <ul>
-                {extras.map(({ key, status, date }) => (
-                  <li key={key}>
-                    <b>{key.toUpperCase()}</b> — {status ?? "N/A"}{date ? ` (${date})` : ""}
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
+        <div className="divider" />
+        <div className="grid2">
+          <KVT k="Mode" v={<span style={{ fontSize: 15, fontWeight: 600 }}>{s.mode ?? "—"}</span>} />
+          <KVT k="Carrier" v={<span style={{ fontSize: 15, fontWeight: 600 }}>{s.carrier ?? "—"}</span>} />
         </div>
       </section>
 
-      {/* Details */}
-      <section style={{ marginTop: 16, padding: 12, border: "1px solid #eee", borderRadius: 12 }}>
-        <h3 style={{ marginTop: 0 }}>Details</h3>
+      {/* Route / Timeline mini cards */}
+      <section className="secGrid">
+        <div className="secCard">
+          <h3 className="secTitle">BILL OF LADING</h3>
+          <div className="secBody">
+            <KVT k="MBL" v={s.mbl_number} />
+            <div className="line" />
+            <KVT k="HBL" v={s.hbl_number} />
+            <div className="line" />
+            <KVT k="Scope of Service" v={s.scope_of_service} />
+          </div>
+        </div>
+        <div className="secCard">
+          <h3 className="secTitle">ROUTE</h3>
+          <div className="secBody">
+            <KVT k="POL/AOL" v={s.pol_aol} />
+            <div className="line" />
+            <KVT k="Transit" v={tsDisplay} />
+            <div className="line" />
+            <KVT k="POD/AOD" v={s.pod_aod} />
+            <div className="line" />
+            <div style={{ fontSize: 13 }}>
+              <div style={{ color: "#64748b" }}>Route</div>
+              <div style={{ color: "#0f172a", fontWeight: 600 }}>{s.route ?? "—"}</div>
+            </div>
+          </div>
+        </div>
+        <div className="secCard">
+          <h3 className="secTitle">TIMELINE</h3>
+          <div className="timelineGrid">
+            <KVT k="ETD" v={formatYMD(s.etd_date)} />
+            <KVT k="ATD" v={formatYMD(s.atd_date)} />
+            <KVT k="ETA" v={formatYMD(s.eta_date)} />
+            <KVT k="ATA" v={formatYMD(s.ata_date)} />
+          </div>
+        </div>
+      </section>
+
+      {/* ===== REMARKS (NEW) — inserted here, no layout change to others ===== */}
+      {(s.remarks && s.remarks.trim() !== "") && (
+        <section className="remarksCard">
+          <h3 className="secTitle">REMARKS</h3>
+          <div className="remarksBody">
+            {s.remarks
+              .split(";")
+              .map((line) => line.trim())
+              .filter(Boolean)
+              .map((line, idx) => {
+                const formatted = line.charAt(0).toUpperCase() + line.slice(1);
+                return (
+                  <div key={idx} className="remarkLine">
+                    <span className="bullet">•</span>
+                    <span className="remarkText">{formatted}</span>
+                  </div>
+                );
+              })}
+          </div>
+        </section>
+      )}
+
+      {/* ===== Progress ===== */}
+      <section className="hybCard">
+        <h3 className="secTitle">OVERALL PROGRESS</h3>
+        {/* Sticky mini-bar */}
+        <div className="stickyWrap" ref={stickyRef}>
+          <div className="miniBar">
+            <div className="miniTop">
+              <span>
+                Status
+                {dispSteps[currentIdx] && (
+                  <>
+                    <span className="nowText">  • Now: {dispSteps[currentIdx].label}</span>
+                  </>
+                )}
+              </span>
+              <span>{percent}%</span>
+            </div>
+            <div className="miniMeter">
+              <div className="miniFill" style={{ width: `${percent}%` }} />
+            </div>
+            <div className="chips">
+              {dispSteps.map((d, i) => (
+                <button
+                  key={d.id}
+                  className={
+                    "chip " + (d.status === "done" ? "chipDone" : d.status === "current" ? "chipCurrent" : "chipTodo")
+                  }
+                  title={`${i + 1}. ${d.label}${d.location ? ` / ${d.location}` : ""}`}
+                  onClick={() => jumpTo(d.id)}
+                >
+                  {i + 1}. {d.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Vertical timeline */}
+        <div className="vWrap">
+          <div className="rail" />
+          <ul className="vList">
+            {visibleSteps.map((d, idx) => {
+              const sideRight = idx % 2 === 1;
+              const isFocus = highlight === d.id;
+              return (
+                <li key={d.id} ref={getRef(d.id)} id={d.id} className="vItem">
+                  {/* node */}
+                  <div
+                    className={
+                      "node " + (d.status === "done" ? "nodeDone" : d.status === "current" ? "nodeCur" : "nodeTodo")
+                    }
+                  >
+                    <span className="nodeSym">{d.status === "done" ? "✓" : d.status === "current" ? "•" : ""}</span>
+                  </div>
+
+                  {/* card */}
+                  <div className={`card ${sideRight ? "cardR" : "cardL"} ${isFocus ? "cardFocus" : ""}`}>
+                    <div className="cardTop">
+                      <h3 className="ttl">
+                        <span className="idx">{ordered.findIndex((o) => o.key === d.id) + 1}</span>
+                        <span>
+                          {d.label}
+                          {d.location ? <span className="loc"> / {d.location}</span> : null}
+                        </span>
+                      </h3>
+                      <span className="badge">{d.status.toUpperCase()}</span>
+                    </div>
+
+                    <div className="sub">
+                      {d.statusText}
+                      {d.code ? `  •  ${d.code}` : ""}
+                    </div>
+
+                    {/* ==== Extra Transshipment compact box ==== */}
+                    {d.children && d.children.length > 0 && (
+                      <div className="extraBox" aria-label="Extra Transshipment list">
+                        {d.children.map((c, i2) => (
+                          <div key={i2} className="extraRow">
+                            <span className="extraStatus">{(c.status ?? "N/A").toString()}</span>
+                            <span className="extraDate">({c.date ? formatYMD(c.date) : "—"})</span>
+                            <span className="extraDash">–</span>
+                            <span className="extraLabel">{c.label}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <NotesBox notes={d.notes} stepId={d.id} stepsMap={stepsMap} />
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+
+        <div className="showMore">
+          <button
+            className="showBtn"
+            onClick={() => setShowAll((v) => !v)}
+            aria-label={showAll ? "Show less milestones" : "Show all milestones"}
+          >
+            {showAll ? "Show less" : `Show all${hiddenCount > 0 ? ` (${hiddenCount} more)` : ""}`}
+          </button>
+        </div>
+      </section>
+
+      {/* ===== Details ===== */}
+      <section className="secWrap">
+        <h3 className="secHeading">Details</h3>
+
         {s.mode === "SEA" ? (
           data.input_sea.length === 0 ? (
-            <p>No containers.</p>
+            <p className="muted">No containers.</p>
           ) : (
-            <ul>
-              {data.input_sea.map((c) => (
-                <li key={c.container_number}>
-                  <b>{c.container_number}</b> — {c.size_type ?? ""} {c.vessel ? ` · Vessel ${c.vessel}` : ""} {c.voyage ? ` · Voy ${c.voyage}` : ""}
-                </li>
+            <div className="premiumTable sea">
+              <div className="tHead">
+                <div>No.</div>
+                <div>Container</div>
+                <div>Size/Type</div>
+                <div>Vessel</div>
+                <div>Voyage</div>
+              </div>
+              {data.input_sea.map((c, idx) => (
+                <div className="tRow" key={c.container_number ?? idx}>
+                  <div>{idx + 1}</div>
+                  <div>{c.container_number}</div>
+                  <div>{c.size_type ?? "—"}</div>
+                  <div>{c.vessel ?? "—"}</div>
+                  <div>{c.voyage ?? "—"}</div>
+                </div>
               ))}
-            </ul>
+            </div>
           )
         ) : data.input_air.length === 0 ? (
-          <p>No flight info.</p>
+          <p className="muted">No flight info.</p>
         ) : (
-          <ul>
-            {data.input_air.map((f) => (
-              <li key={f.flight}>
-                <b>{f.flight}</b> — {f.pieces ?? "?"} pcs · {f.weight_kg ?? "?"} kg · {f.chargeable_weight_kg ?? "?"} kg CW
-              </li>
+          <div className="premiumTable air">
+            <div className="tHead">
+              <div>No.</div>
+              <div>Flight</div>
+              <div>Unit Kind</div>
+              <div>Pieces</div>
+              <div>Gross (kg)</div>
+              <div>Chargeable (kg)</div>
+            </div>
+            {data.input_air.map((f, idx) => (
+              <div className="tRow" key={f.flight ?? idx}>
+                <div>{idx + 1}</div>
+                <div>{f.flight}</div>
+                <div>{(f as any).unit_kind ?? "—"}</div>
+                <div>{f.pieces ?? "—"}</div>
+                <div>{f.weight_kg ?? "—"}</div>
+                <div>{f.chargeable_weight_kg ?? "—"}</div>
+              </div>
             ))}
+          </div>
+        )}
+      </section>
+
+      {/* ===== Notes tổng hợp ===== */}
+      <section className="notesCard">
+        <h3 className="secTitle">Notes</h3>
+        {data.notes.length === 0 ? (
+          <p className="muted">Chưa có ghi chú.</p>
+        ) : (
+          <ul className="noteList">
+            {data.notes.map((n) => {
+              const ts = (n as any).note_time as string | undefined;
+              const tsFmt = ts ? ts.slice(0, 19).replace("T", " ") : "";
+              const keyNorm = normalizeStepKey((n as any).step);
+              const label = stepsMap[keyNorm] ?? keyNorm.toUpperCase();
+              return (
+                <li key={n.id} className="noteItem">
+                  <span className="dot" />
+                  <div className="noteBody">
+                    <div className="noteMeta">
+                      {tsFmt} — {label}
+                      {(n as any).note_type ? ` (${(n as any).note_type})` : ""}
+                    </div>
+                    <div className="noteText">{(n as any).note}</div>
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>
 
-      {/* Notes */}
-      <section style={{ marginTop: 16, padding: 12, border: "1px solid #eee", borderRadius: 12 }}>
-        <h3 style={{ marginTop: 0 }}>Notes</h3>
-        {data.notes.length === 0 ? (
-          <p>Chưa có ghi chú.</p>
-        ) : (
-          <ul>
-            {data.notes.map((n) => (
-              <li key={n.id}>
-                [{n.note_time?.slice(0, 19).replace("T", " ")}] step {n.step}: {n.note} {n.note_type ? `(${n.note_type})` : ""}
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+      <style jsx>{`
+        /* Pills & buttons */
+        .copyBtn{padding:6px 12px;border-radius:10px;border:1px solid #0b1220;background:#0b1220;color:#fff;font-weight:700}
+
+        /* Info cards */
+        .infoCard{margin-top:16px;border-radius:16px;border:1px solid #e2e8f0;background:linear-gradient(135deg,#fff,#f8fafc);box-shadow:0 8px 28px rgba(15,23,42,.06);padding:18px 16px}
+        .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:center}
+        .divider{height:1px;margin:10px 0 12px;background:linear-gradient(90deg,rgba(0,0,0,0) 0%,#e2e8f0 50%,rgba(0,0,0,0) 100%)}
+        .statusRow{display:flex;align-items:center;justify-content:space-between}
+        .statusLbl{color:#64748b;font-size:13px}
+        .statusPill{
+          display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;
+          border:1px solid #a7f3d0;background:#ecfdf5;color:#065f46;font-size:12px;font-weight:800;
+          box-shadow:0 0 0 2px rgba(16,185,129,.05) inset;
+        }
+
+        .secGrid{margin-top:12px;display:grid;gap:16px;grid-template-columns:repeat(3,1fr)}
+        .secCard{border:1px solid #e2e8f0;border-radius:14px;background:#ffffffe6;backdrop-filter:saturate(120%) blur(2px);box-shadow:0 10px 24px rgba(15,23,42,.05);padding:14px;transition:box-shadow .2s}
+        .secCard:hover{box-shadow:0 16px 36px rgba(15,23,42,.08)}
+        .secTitle{margin:0 0 8px 0;font-size:12px;letter-spacing:.08em;color:#64748b;font-weight:700}
+        .secBody{display:flex;flex-direction:column;gap:8px}
+        .line{height:1px;background:#eef2f7}
+        .timelineGrid{display:grid;grid-template-columns:1fr 1fr;gap:10px 20px}
+        @media (max-width:860px){.secGrid{grid-template-columns:1fr}}
+
+        /* ===== Remarks card (isolated styles, no overrides) ===== */
+        .remarksCard{margin-top:16px;border-radius:16px;border:1px solid #e6eaf2;background:linear-gradient(180deg,#fff,#fafbff);box-shadow:0 10px 28px rgba(15, 23, 42,.06);padding:14px 16px}
+        .remarksBody{display:flex;flex-direction:column;gap:6px;margin-top:6px}
+        .remarkLine{display:flex;align-items:flex-start;gap:8px;font-size:13.5px;color:#0f172a;line-height:1.45}
+        .bullet{color:#22c55e;font-weight:700;font-size:16px;line-height:1}
+        .remarkText{flex:1;font-weight:500}
+
+        /* Progress + chips */
+        .hybCard{margin-top:16px;border-radius:18px;border:1px solid #e6eaf2;background:linear-gradient(180deg,#fff 0%,#f7f9fc 100%);box-shadow:0 14px 36px rgba(15,23,42,.08);padding:16px}
+        .stickyWrap{position:sticky;top:0;z-index:20}
+        .miniBar{border:1px solid #e5e7eb;background:#fff;border-radius:16px;box-shadow:0 6px 16px rgba(15,23,42,.06);padding:10px 12px}
+        .miniTop{display:flex;align-items:center;justify-content:space-between;font-size:12px;color:#667085}
+        .miniMeter{height:8px;background:#ecf0f6;border-radius:999px;overflow:hidden;margin-top:6px}
+        .miniFill{height:100%;background:linear-gradient(90deg,#10b981,#22c55e)}
+        .chips{display:flex;gap:8px;overflow-x:auto;padding-top:6px;padding-bottom:2px}
+        .chip{white-space:nowrap;border-radius:999px;padding:4px 8px;font-size:11px;border:1px solid;transition:all .15s ease;cursor:pointer}
+        .chipDone{background:#eafff2;border-color:#a7f3d0;color:#065f46}
+        .chipDone:hover{background:#16a34a;border-color:#15803d;color:#fff;box-shadow:0 0 0 2px rgba(22,163,74,.25)}
+        .chipCurrent{background:#fff7ed;border-color:#fdba74;color:#9a3412;box-shadow:0 0 0 2px #fed7aa}
+        .chipCurrent:hover{background:#fb923c;border-color:#f97316;color:#fff;box-shadow:0 0 0 2px rgba(251,146,60,.30)}
+        .chipTodo{background:#f6f7fb;border-color:#e5e7eb;color:#667085}
+        .chipTodo:hover{background:#cbd5e1;border-color:#94a3b8;color:#111827}
+
+        /* Vertical timeline */
+        .vWrap{position:relative;background:#fff;border-radius:18px;box-shadow:0 8px 20px rgba(15,23,42,.06);padding:20px;margin-top:10px}
+        .rail{position:absolute;left:50%;top:24px;bottom:24px;transform:translateX(-50%);border-left:2px dashed #d1d5db;pointer-events:none;z-index:0}
+        .vList{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:18px}
+        .vItem{position:relative;padding-top:8px}
+        .node{position:absolute;left:50%;top:8px;transform:translateX(-50%);width:28px;height:28px;border-radius:50%;display:grid;place-items:center;border:2px solid;z-index:2}
+        .nodeDone{background:#ecfdf5;border-color:#10b981;color:#059669}
+        .nodeCur{background:#fff7ed;border-color:#fb923c;color:#f97316;animation:pulse 1.6s ease-in-out infinite}
+        .nodeTodo{background:#f8fafc;border-color:#cbd5e1;color:#94a3b8}
+        .nodeSym{font-size:12px}
+        @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(251,146,60,.35)}70%{box-shadow:0 0 0 10px rgba(251,146,60,0)}100%{box-shadow:0 0 0 0 rgba(251,146,60,0)}}
+
+        /* Card & focus */
+        .card{position:relative;z-index:1;width:calc(50% - 32px);background:#ffffffb3;border:1px solid #e5e7eb;border-radius:14px;padding:12px 14px;backdrop-filter:saturate(120%);box-shadow:0 8px 20px rgba(15,23,42,.05);transition:box-shadow .15s,border-color .15s}
+        .cardL{margin-right:auto;padding-right:20px}
+        .cardR{margin-left:auto;padding-left:20px}
+        .cardFocus{border-color:#FACC15;box-shadow:0 0 0 2px rgba(250,204,21,.35) inset, 0 0 0 2px rgba(250,204,21,.15)}
+        .cardTop{display:flex;align-items:center;justify-content:space-between;gap:10px}
+        .ttl{display:flex;align-items:center;gap:8px;margin:0;font-weight:700;font-size:16px}
+        .idx{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:999px;border:1px solid #d1d5db;font-size:11px;color:#64748b}
+        .loc{color:#9aa4b2}
+        .badge{font-size:11px;border:1px solid #e5e7eb;border-radius:999px;padding:2px 8px}
+        .sub{margin-top:6px;color:#6b7280;font-weight:600}
+
+        /* ===== Extra transshipment compact box ===== */
+        .extraBox{margin-top:10px;border:1px solid #e5e7eb;background:#fafbff;border-radius:10px;padding:8px 10px;display:flex;flex-direction:column;gap:6px}
+        .extraRow{display:grid;grid-template-columns:auto auto 12px 1fr;align-items:center;gap:8px;font-weight:600;color:#0f172a}
+        .extraStatus{padding:2px 8px;border:1px solid #e5e7eb;border-radius:999px;font-size:12px;background:#ffffff}
+        .extraDate{color:#6b7280;font-size:12px}
+        .extraDash{color:#9ca3af}
+        .extraLabel{font-size:12px;color:#334155;font-weight:600;line-height:1.25}
+
+        /* Notes inside card */
+        .notesBox{margin-top:10px;border:1px solid #e5e7eb;border-radius:10px;background:#fafafa;padding:10px}
+        .notesT{font-size:12px;font-weight:700;color:#6b7280;margin-bottom:6px}
+        .nList{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+        .nItem{display:grid;grid-template-columns:10px 1fr;gap:8px;align-items:flex-start}
+        .nDot{width:6px;height:6px;border-radius:999px;background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.15);margin-top:6px}
+        .nMeta{font-size:11px;color:#6b7280;font-weight:700}
+        .nTxt{margin-top:2px}
+
+        .showMore{display:flex;justify-content:center;margin-top:10px}
+        .showBtn{padding:8px 14px;border-radius:999px;border:1px solid #e5e7eb;background:#fff}
+        .showBtn:hover{box-shadow:0 2px 8px rgba(0,0,0,.06)}
+
+        /* Tables */
+        .secWrap{margin-top:16px}
+        .secHeading{margin:0 0 10px 0;font-size:14px;letter-spacing:.08em;color:#64748b;font-weight:800;text-transform:uppercase}
+        .premiumTable{border:1px solid #e6eaf2;border-radius:16px;overflow:hidden;background:#fff;box-shadow:0 10px 28px rgba(15,23,42,.05)}
+        .premiumTable .tHead{background:linear-gradient(180deg,#f7f9fc,#f2f5fb);color:#334155;font-weight:800;font-size:13px;border-bottom:1px solid #e9edf5}
+        .premiumTable.sea .tHead,.premiumTable.sea .tRow{display:grid;grid-template-columns:64px 1.2fr 160px 1.4fr 140px;gap:16px;align-items:center;padding:12px 16px}
+        .premiumTable.air .tHead,.premiumTable.air .tRow{display:grid;grid-template-columns:64px 1.4fr 150px 120px 160px 200px;gap:16px;align-items:center;padding:12px 16px}
+        .premiumTable .tRow + .tRow{border-top:1px solid #eef2f7}
+        .premiumTable .tRow:hover{background:#f9fbff}
+        .muted{color:#64748b;margin:6px 0 0 2px}
+        @media (max-width:680px){
+          .card{width:100%}
+          .premiumTable.sea .tHead,.premiumTable.sea .tRow{grid-template-columns:48px 1fr 120px 1fr 110px}
+          .premiumTable.air .tHead,.premiumTable.air .tRow{grid-template-columns:48px 1fr 120px 90px 120px 140px}
+        }
+
+        /* Notes tổng hợp */
+        .notesCard{margin-top:16px;border-radius:16px;border:1px solid #e6eaf2;background:linear-gradient(180deg,#fff,#fafbff);box-shadow:0 10px 28px rgba(15, 23, 42,.06);padding:14px 16px}
+        .noteList{margin:0;padding-left:0;list-style:none}
+        .noteItem{display:grid;grid-template-columns:14px 1fr;gap:10px;align-items:start;padding:10px 4px;border-radius:10px}
+        .noteItem + .noteItem{border-top:1px dashed #e8ecf4}
+        .noteItem:hover{background:#f8fafc}
+        .dot{width:8px;height:8px;margin-top:6px;border-radius:999px;background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.15)}
+        .noteMeta{font-size:12px;color:#667087;font-weight:700;letter-spacing:.02em}
+        .noteText{margin-top:4px;color:#111827;font-size:13.5px}
+        .nowText {color: #f97316;      /* màu cam */font-weight: 700;}
+      `}</style>
     </main>
   );
+}
+
+/* ===== helpers ===== */
+function KVT({ k, v }: { k: string; v?: ReactNode }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 13 }}>
+      <span style={{ color: "#64748b" }}>{k}</span>
+      <span style={{ color: "#0f172a", fontWeight: 600 }}>{v ?? "—"}</span>
+    </div>
+  );
+}
+
+function NotesBox({
+  notes,
+  stepId,
+  stepsMap,
+}: {
+  notes: Note[];
+  stepId: string;
+  stepsMap: Record<string, string>;
+}) {
+  if (!notes || notes.length === 0) {
+    return (
+      <div className="notesBox">
+        <div className="notesT">Milestone Notes</div>
+        <div style={{ color: "#9aa4b2" }}>—</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="notesBox">
+      <div className="notesT">Milestone Notes</div>
+      <ul className="nList">
+        {notes.map((n) => {
+          const ts = (n as any).note_time as string | undefined;
+          const tsFmt = ts ? ts.slice(0, 16).replace("T", " ") : "";
+          const keyNorm = normalizeStepKey((n as any).step) || stepId;
+          const noteLabel = stepsMap[keyNorm] ?? keyNorm.toUpperCase();
+          const type = (n as any).note_type as string | undefined;
+          return (
+            <li key={n.id} className="nItem">
+              <span className="nDot" />
+              <div>
+                <div className="nMeta">{type ? icon(type) : ""} {(n as any).note}</div>
+                <div className="nMeta" style={{ fontWeight: 500 }}>
+                  {tsFmt}
+                  {noteLabel ? ` • ${noteLabel}` : ""}
+                  {type ? ` • ${type}` : ""}
+                </div>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function icon(t?: string) {
+  const m: Record<string, string> = { info: "ℹ️", eta: "⏱️", risk: "⚠️", doc: "📄", broker: "🧑‍💼", photo: "🖼️" };
+  return m[(t || "").toLowerCase()] ?? "";
 }

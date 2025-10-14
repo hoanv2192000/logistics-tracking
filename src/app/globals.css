@@ -1,8 +1,17 @@
+@import "tailwindcss";
+
+/* ===========================
+   GLOBAL THEME VARIABLES
+   =========================== */
 :root {
   --background: #ffffff;
   --foreground: #171717;
+
+  --base-font-size: 14.5px;
+  --base-line-height: 1.6;
 }
 
+/* Dark mode theo system preference (giữ nguyên logic cũ) */
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
@@ -10,18 +19,13 @@
   }
 }
 
+/* ===========================
+   BASE / RESET
+   =========================== */
 html,
 body {
   max-width: 100vw;
   overflow-x: hidden;
-}
-
-body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
 }
 
 * {
@@ -39,4 +43,69 @@ a {
   html {
     color-scheme: dark;
   }
+}
+
+/* ===========================
+   TYPOGRAPHY (FONTS)
+   Inter cho body (biến --ff-body)
+   Manrope cho headline (biến --ff-head)
+   =========================== */
+body {
+  color: var(--foreground);
+  background: var(--background);
+
+  /* Font từ next/font + fallback */
+  font-family: var(--ff-body), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans",
+    "Liberation Sans", sans-serif;
+
+  font-size: var(--base-font-size);
+  line-height: var(--base-line-height);
+
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Headline / tiêu đề dùng Manrope */
+h1, h2, h3, h4, h5, h6,
+.page-title, .section-title, .card-title {
+  font-family: var(--ff-head), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-weight: 800; /* 700–800 */
+  letter-spacing: 0.01em;
+  color: var(--foreground);
+}
+
+/* Label metadata nhỏ */
+.meta {
+  color: #64748b;
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+}
+
+/* Số liệu/ID/Ngày: thẳng cột */
+.tnum {
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+/* Mã container/MBL/HBL: slashed zero */
+.id {
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1, "zero" 1;
+  letter-spacing: 0.02em;
+}
+
+/* Tuỳ chọn: chữ nhỏ dùng trong bảng */
+.small {
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+/* Tuỳ chọn: wrapper trang */
+.container {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding-left: 16px;
+  padding-right: 16px;
 }

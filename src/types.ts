@@ -13,6 +13,7 @@ export type Shipment = {
   tracking_id: string | null;
   mbl_number: string | null;
   hbl_number: string | null;
+  scope_of_service?: string | null;
   carrier: string | null;
   etd_date: string | null;
   atd_date: string | null;
