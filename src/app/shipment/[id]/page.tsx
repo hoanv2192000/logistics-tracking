@@ -8,3 +8,5 @@ export default async function ShipmentPage({
   const { id } = await params;
   return <ShipmentClient id={id} />;
 }
+
+

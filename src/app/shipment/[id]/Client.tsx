@@ -492,7 +492,7 @@ export default function ShipmentClient({ id }: { id: string }) {
       {/* Info */}
       <section className="infoCard">
         <div className="grid2">
-          <KVT k="Tracking" v={<span style={{ fontSize: 15, fontWeight: 600 }}>{s.tracking_id ?? "—"}</span>} />
+          <KVT k="Shipment ID" v={<span style={{ fontSize: 15, fontWeight: 600 }}>{s.shipment_id ?? "—"}</span>} />
           <div className="statusRow">
             <span className="statusLbl">Status</span>
             <span className="statusPill">{effectiveStatus}</span>
