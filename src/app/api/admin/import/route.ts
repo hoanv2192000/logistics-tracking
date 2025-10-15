@@ -14,13 +14,14 @@ async function fetchCsv(url: string): Promise<RowObject[]> {
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error(`Fetch CSV failed: ${url} -> ${res.status}`);
   const text = await res.text();
+
   const rows = parse(text, {
     columns: true,
     skip_empty_lines: true,
     trim: true,
   }) as Record<string, string>[];
 
-  // chuyển "" -> null (giữ type an toàn bằng unknown/object)
+  // chuyển "" -> null để tránh upsert lỗi khi CSV có ô trống
   return rows.map((r) => {
     const obj: RowObject = {};
     for (const [k, v] of Object.entries(r)) obj[k] = v === "" ? null : v;
@@ -37,9 +38,13 @@ async function upsertTable(
   const BATCH = 1000;
   for (let i = 0; i < rows.length; i += BATCH) {
     const chunk = rows.slice(i, i + BATCH);
-    const { error } = await supabase.from(table).upsert(chunk as object[], { onConflict });
+    const { error } = await supabase
+      .from(table)
+      .upsert(chunk as object[], { onConflict });
     if (error) {
-      throw new Error(`${table} upsert failed (onConflict=${onConflict}): ${error.message}`);
+      throw new Error(
+        `${table} upsert failed (onConflict=${onConflict}): ${error.message}`
+      );
     }
   }
 }
@@ -53,42 +58,93 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
+  // ===== DEBUG TẠM: kiểm tra project Supabase/REST có thấy shipment_id không
+  if (new URL(req.url).searchParams.get("debug") === "1") {
+    try {
+      const supabase = getSupabaseAdmin();
+      const { data, error } = await supabase
+        .from("shipments")
+        .select("shipment_id")
+        .limit(1);
+
+      return NextResponse.json({
+        ok: true as const,
+        supabase_url: process.env["NEXT_PUBLIC_SUPABASE_URL"] ?? null,
+        see_shipment_id: !error,
+        select_error: error?.message ?? null,
+        sample: data ?? null,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return NextResponse.json(
+        {
+          ok: false as const,
+          error: msg,
+          supabase_url: process.env["NEXT_PUBLIC_SUPABASE_URL"] ?? null,
+        },
+        { status: 500 }
+      );
+    }
+  }
+  // ===== HẾT DEBUG =====
+
   try {
     const supabase = getSupabaseAdmin();
-    const dryrun = new URL(req.url).searchParams.get("dryrun") === "1";
+    const url = new URL(req.url);
+    const dryrun = url.searchParams.get("dryrun") === "1";
 
-    const [shipments, inputSea, inputAir, msSea, msAir, msNotes] = await Promise.all([
-      fetchCsv(reqEnv("GSH_SHIPMENTS_CSV")),
-      fetchCsv(reqEnv("GSH_INPUT_SEA_CSV")),
-      fetchCsv(reqEnv("GSH_INPUT_AIR_CSV")),
-      fetchCsv(reqEnv("GSH_MILESTONES_SEA_CSV")),
-      fetchCsv(reqEnv("GSH_MILESTONES_AIR_CSV")),
-      fetchCsv(reqEnv("GSH_MILESTONES_NOTES_CSV")),
-    ]);
+    const [shipments, inputSea, inputAir, msSea, msAir, msNotes] =
+      await Promise.all([
+        fetchCsv(reqEnv("GSH_SHIPMENTS_CSV")),
+        fetchCsv(reqEnv("GSH_INPUT_SEA_CSV")),
+        fetchCsv(reqEnv("GSH_INPUT_AIR_CSV")),
+        fetchCsv(reqEnv("GSH_MILESTONES_SEA_CSV")),
+        fetchCsv(reqEnv("GSH_MILESTONES_AIR_CSV")),
+        fetchCsv(reqEnv("GSH_MILESTONES_NOTES_CSV")),
+      ]);
 
     if (!dryrun) {
       await upsertTable(supabase, "shipments", shipments, "shipment_id");
-      await upsertTable(supabase, "input_sea", inputSea, "shipment_id,container_number");
+      await upsertTable(
+        supabase,
+        "input_sea",
+        inputSea,
+        "shipment_id,container_number"
+      );
       await upsertTable(supabase, "input_air", inputAir, "shipment_id,flight");
       await upsertTable(supabase, "milestones_sea", msSea, "shipment_id");
       await upsertTable(supabase, "milestones_air", msAir, "shipment_id");
 
       if (msNotes.length > 0) {
         const ids = Array.from(
-          new Set(msNotes.map((r) => String((r as RowObject)["shipment_id"] ?? "")).filter(Boolean))
+          new Set(
+            msNotes
+              .map((r) => String((r as RowObject)["shipment_id"] ?? ""))
+              .filter(Boolean)
+          )
         );
         if (ids.length > 0) {
           const { error: delErr } = await supabase
             .from("milestones_notes")
             .delete()
             .in("shipment_id", ids);
-          if (delErr) throw new Error(`milestones_notes delete failed: ${delErr.message}`);
+          if (delErr) {
+            throw new Error(
+              `milestones_notes delete failed: ${delErr.message}`
+            );
+          }
         }
         const BATCH = 1000;
         for (let i = 0; i < msNotes.length; i += BATCH) {
           const chunk = msNotes.slice(i, i + BATCH);
-          const { error } = await supabase.from("milestones_notes").insert(chunk as object[]);
-          if (error) throw new Error(`milestones_notes insert failed: ${error.message}`);
+          const { error } = await supabase
+            .from("milestones_notes")
+            .insert(chunk as object[]);
+          if (error) {
+            throw new Error(
+              `milestones_notes insert failed: ${error.message}`
+            );
+          }
         }
       }
     }
@@ -107,6 +163,6 @@ export async function POST(req: NextRequest) {
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
+    return NextResponse.json({ ok: false as const, error: msg }, { status: 500 });
   }
 }
