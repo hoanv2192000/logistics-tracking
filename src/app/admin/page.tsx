@@ -42,20 +42,21 @@ export default function AdminPage() {
     setError(null);
   }
 
+  /** Xác thực token (dryrun để tránh ghi DB) */
   async function verifyToken(t: string) {
     try {
-      // gọi nhẹ để xác thực token (nếu sai -> 401)
-      const res = await fetch("/api/admin/import", {
+      const res = await fetch("/api/admin/import?dryrun=1", {
         method: "POST",
-        headers: { "x-admin-token": t },
+        headers: { "x-admin-token": t.trim() }, // tránh khoảng trắng thừa
       });
+      // Nếu không phải 401 thì coi như hợp lệ
       if (res.status !== 401) setIsAuthorized(true);
-      // không cần import thật, nên không đọc body
     } catch {
       setIsAuthorized(false);
     }
   }
 
+  /** Gọi import thật; vá parse JSON an toàn */
   async function doImport() {
     setLoading(true);
     setError(null);
@@ -63,13 +64,37 @@ export default function AdminPage() {
     try {
       const res = await fetch("/api/admin/import", {
         method: "POST",
-        headers: { "x-admin-token": token },
+        headers: { "x-admin-token": token.trim() },
       });
-      const json: ImportResponse = await res.json();
+
+      // đọc dạng text trước, rồi mới thử parse JSON
+      const ct = res.headers.get("content-type") || "";
+      const raw = await res.text();
+
+      let data: ImportResponse | null = null;
+      if (ct.includes("application/json") && raw) {
+        try {
+          data = JSON.parse(raw) as ImportResponse;
+        } catch {
+          // nếu JSON hỏng, để data = null và xử lý phía dưới
+        }
+      }
+
       if (!res.ok) {
-        setError((json as { error?: string }).error ?? "Import failed");
+        const msg =
+          (data as any)?.error || raw || `HTTP ${res.status}`;
+        throw new Error(msg);
+      }
+
+      if (!data || (data as any).ok === undefined) {
+        // API trả rỗng/khác JSON
+        throw new Error("Unexpected empty or non-JSON response");
+      }
+
+      if (data.ok) {
+        setResult(data);
       } else {
-        setResult(json);
+        setError(data.error || "Import failed");
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Network error";
@@ -80,12 +105,27 @@ export default function AdminPage() {
   }
 
   const Header = (
-    <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+    <header
+      style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        marginBottom: 16,
+      }}
+    >
       <h1 style={{ margin: 0 }}>Admin — Import CSV</h1>
       {isAuthorized ? (
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: 13, color: "#0a7f2e" }}>Đã đăng nhập</span>
-          <button onClick={logout} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #ddd", background: "#fff" }}>
+          <button
+            onClick={logout}
+            style={{
+              padding: "6px 10px",
+              borderRadius: 8,
+              border: "1px solid #ddd",
+              background: "#fff",
+            }}
+          >
             Đăng xuất
           </button>
         </div>
@@ -98,23 +138,43 @@ export default function AdminPage() {
   // Nếu chưa xác thực thì chỉ hiện form nhập token
   if (!isAuthorized) {
     return (
-      <main style={{ padding: 24, maxWidth: 520, margin: "80px auto", textAlign: "center", border: "1px solid #eee", borderRadius: 12 }}>
+      <main
+        style={{
+          padding: 24,
+          maxWidth: 520,
+          margin: "80px auto",
+          textAlign: "center",
+          border: "1px solid #eee",
+          borderRadius: 12,
+        }}
+      >
         {Header}
-        <p>Nhập token admin (trùng <code>ADMIN_TOKEN</code> trên Vercel) để truy cập.</p>
+        <p>
+          Nhập token admin (trùng <code>ADMIN_TOKEN</code> trên Vercel) để truy
+          cập.
+        </p>
         <input
           value={token}
           onChange={(e) => saveToken(e.target.value)}
           placeholder="ADMIN_TOKEN"
           style={{
-            width: "100%", padding: 12, border: "1px solid #ccc", borderRadius: 8,
-            marginTop: 12, marginBottom: 12,
+            width: "100%",
+            padding: 12,
+            border: "1px solid #ccc",
+            borderRadius: 8,
+            marginTop: 12,
+            marginBottom: 12,
           }}
         />
         <button
           onClick={() => verifyToken(token)}
           style={{
-            padding: "10px 16px", borderRadius: 8, border: "none",
-            background: "#0070f3", color: "white", cursor: "pointer",
+            padding: "10px 16px",
+            borderRadius: 8,
+            border: "none",
+            background: "#0070f3",
+            color: "white",
+            cursor: "pointer",
           }}
         >
           Xác nhận
@@ -132,17 +192,32 @@ export default function AdminPage() {
       <button
         onClick={doImport}
         disabled={loading}
-        style={{ padding: "10px 20px", borderRadius: 8, border: "1px solid #ddd", background: "#fff" }}
+        style={{
+          padding: "10px 20px",
+          borderRadius: 8,
+          border: "1px solid #ddd",
+          background: "#fff",
+        }}
       >
         {loading ? "Đang import..." : "Import"}
       </button>
 
-      {error && <p style={{ color: "crimson", marginTop: 12 }}>Lỗi: {error}</p>}
+      {error && (
+        <p style={{ color: "crimson", marginTop: 12 }}>Lỗi: {error}</p>
+      )}
+
       {result && result.ok && (
         <div style={{ marginTop: 16 }}>
           <h3>Kết quả:</h3>
-          <pre style={{ background: "#fafafa", padding: 12, border: "1px solid #eee", borderRadius: 8 }}>
-{JSON.stringify(result.summary, null, 2)}
+          <pre
+            style={{
+              background: "#fafafa",
+              padding: 12,
+              border: "1px solid #eee",
+              borderRadius: 8,
+            }}
+          >
+            {JSON.stringify(result.summary, null, 2)}
           </pre>
         </div>
       )}

@@ -37,9 +37,10 @@ async function upsertTable(
   const BATCH = 1000;
   for (let i = 0; i < rows.length; i += BATCH) {
     const chunk = rows.slice(i, i + BATCH);
-    // ép kiểu về object[] để thỏa kiểu của supabase-js, tránh dùng any
     const { error } = await supabase.from(table).upsert(chunk as object[], { onConflict });
-    if (error) throw new Error(`${table} upsert failed: ${error.message}`);
+    if (error) {
+      throw new Error(`${table} upsert failed (onConflict=${onConflict}): ${error.message}`);
+    }
   }
 }
 
@@ -52,55 +53,60 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  const supabase = getSupabaseAdmin();
+  try {
+    const supabase = getSupabaseAdmin();
+    const dryrun = new URL(req.url).searchParams.get("dryrun") === "1";
 
-  const [
-    shipments,
-    inputSea,
-    inputAir,
-    msSea,
-    msAir,
-    msNotes,
-  ] = await Promise.all([
-    fetchCsv(reqEnv("GSH_SHIPMENTS_CSV")),
-    fetchCsv(reqEnv("GSH_INPUT_SEA_CSV")),
-    fetchCsv(reqEnv("GSH_INPUT_AIR_CSV")),
-    fetchCsv(reqEnv("GSH_MILESTONES_SEA_CSV")),
-    fetchCsv(reqEnv("GSH_MILESTONES_AIR_CSV")),
-    fetchCsv(reqEnv("GSH_MILESTONES_NOTES_CSV")),
-  ]);
+    const [shipments, inputSea, inputAir, msSea, msAir, msNotes] = await Promise.all([
+      fetchCsv(reqEnv("GSH_SHIPMENTS_CSV")),
+      fetchCsv(reqEnv("GSH_INPUT_SEA_CSV")),
+      fetchCsv(reqEnv("GSH_INPUT_AIR_CSV")),
+      fetchCsv(reqEnv("GSH_MILESTONES_SEA_CSV")),
+      fetchCsv(reqEnv("GSH_MILESTONES_AIR_CSV")),
+      fetchCsv(reqEnv("GSH_MILESTONES_NOTES_CSV")),
+    ]);
 
-  await upsertTable(supabase, "shipments", shipments, "shipment_id");
-  await upsertTable(supabase, "input_sea", inputSea, "shipment_id,container_number");
-  await upsertTable(supabase, "input_air", inputAir, "shipment_id,flight");
-  await upsertTable(supabase, "milestones_sea", msSea, "shipment_id");
-  await upsertTable(supabase, "milestones_air", msAir, "shipment_id");
+    if (!dryrun) {
+      await upsertTable(supabase, "shipments", shipments, "shipment_id");
+      await upsertTable(supabase, "input_sea", inputSea, "shipment_id,container_number");
+      await upsertTable(supabase, "input_air", inputAir, "shipment_id,flight");
+      await upsertTable(supabase, "milestones_sea", msSea, "shipment_id");
+      await upsertTable(supabase, "milestones_air", msAir, "shipment_id");
 
-  if (msNotes.length > 0) {
-    const ids = Array.from(
-      new Set(msNotes.map((r) => String((r as RowObject)["shipment_id"] ?? "")).filter(Boolean))
-    );
-    if (ids.length > 0) {
-      const { error: delErr } = await supabase.from("milestones_notes").delete().in("shipment_id", ids);
-      if (delErr) throw new Error(`milestones_notes delete failed: ${delErr.message}`);
+      if (msNotes.length > 0) {
+        const ids = Array.from(
+          new Set(msNotes.map((r) => String((r as RowObject)["shipment_id"] ?? "")).filter(Boolean))
+        );
+        if (ids.length > 0) {
+          const { error: delErr } = await supabase
+            .from("milestones_notes")
+            .delete()
+            .in("shipment_id", ids);
+          if (delErr) throw new Error(`milestones_notes delete failed: ${delErr.message}`);
+        }
+        const BATCH = 1000;
+        for (let i = 0; i < msNotes.length; i += BATCH) {
+          const chunk = msNotes.slice(i, i + BATCH);
+          const { error } = await supabase.from("milestones_notes").insert(chunk as object[]);
+          if (error) throw new Error(`milestones_notes insert failed: ${error.message}`);
+        }
+      }
     }
-    const BATCH = 1000;
-    for (let i = 0; i < msNotes.length; i += BATCH) {
-      const chunk = msNotes.slice(i, i + BATCH);
-      const { error } = await supabase.from("milestones_notes").insert(chunk as object[]);
-      if (error) throw new Error(`milestones_notes insert failed: ${error.message}`);
-    }
+
+    return NextResponse.json({
+      ok: true as const,
+      dryrun,
+      summary: {
+        shipments: shipments.length,
+        input_sea: inputSea.length,
+        input_air: inputAir.length,
+        milestones_sea: msSea.length,
+        milestones_air: msAir.length,
+        milestones_notes: msNotes.length,
+      },
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
-
-  return NextResponse.json({
-    ok: true as const,
-    summary: {
-      shipments: shipments.length,
-      input_sea: inputSea.length,
-      input_air: inputAir.length,
-      milestones_sea: msSea.length,
-      milestones_air: msAir.length,
-      milestones_notes: msNotes.length,
-    },
-  });
 }
