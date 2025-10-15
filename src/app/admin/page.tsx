@@ -14,6 +14,16 @@ type ImportResponse =
   | { ok: true; summary: ImportSummary }
   | { ok: false; error: string };
 
+/* ==== helpers (tránh any) ==== */
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null;
+}
+function getErrorField(v: unknown): string | null {
+  if (!isRecord(v)) return null;
+  const e = v["error"];
+  return typeof e === "string" ? e : null;
+}
+
 export default function AdminPage() {
   const [token, setToken] = useState("");
   const [isAuthorized, setIsAuthorized] = useState(false);
@@ -42,21 +52,20 @@ export default function AdminPage() {
     setError(null);
   }
 
-  /** Xác thực token (dryrun để tránh ghi DB) */
+  // xác thực token nhẹ nhàng (không ghi DB)
   async function verifyToken(t: string) {
     try {
       const res = await fetch("/api/admin/import?dryrun=1", {
         method: "POST",
-        headers: { "x-admin-token": t.trim() }, // tránh khoảng trắng thừa
+        headers: { "x-admin-token": t.trim() },
       });
-      // Nếu không phải 401 thì coi như hợp lệ
       if (res.status !== 401) setIsAuthorized(true);
     } catch {
       setIsAuthorized(false);
     }
   }
 
-  /** Gọi import thật; vá parse JSON an toàn */
+  // gọi import thật; parse JSON an toàn
   async function doImport() {
     setLoading(true);
     setError(null);
@@ -67,37 +76,39 @@ export default function AdminPage() {
         headers: { "x-admin-token": token.trim() },
       });
 
-      // đọc dạng text trước, rồi mới thử parse JSON
-      const ct = res.headers.get("content-type") || "";
+      const ct = res.headers.get("content-type") ?? "";
       const raw = await res.text();
 
-      let data: ImportResponse | null = null;
+      let parsed: unknown = null;
       if (ct.includes("application/json") && raw) {
         try {
-          data = JSON.parse(raw) as ImportResponse;
+          parsed = JSON.parse(raw);
         } catch {
-          // nếu JSON hỏng, để data = null và xử lý phía dưới
+          /* bỏ qua, sẽ xử lý phía dưới */
         }
       }
 
+
       if (!res.ok) {
-        const msg =
-          (data as any)?.error || raw || `HTTP ${res.status}`;
+        const statusText = `HTTP ${res.status}`;
+        const msg = getErrorField(parsed) ?? (raw || statusText);
         throw new Error(msg);
       }
 
-      if (!data || (data as any).ok === undefined) {
-        // API trả rỗng/khác JSON
+      if (!isRecord(parsed) || !("ok" in parsed)) {
         throw new Error("Unexpected empty or non-JSON response");
       }
 
-      if (data.ok) {
-        setResult(data);
+      const okVal = parsed["ok"];
+      if (okVal === true) {
+        setResult(parsed as { ok: true; summary: ImportSummary });
+      } else if (okVal === false) {
+        setError(getErrorField(parsed) ?? "Import failed");
       } else {
-        setError(data.error || "Import failed");
+        throw new Error("Unexpected response shape");
       }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Network error";
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Network error";
       setError(msg);
     } finally {
       setLoading(false);
@@ -205,7 +216,6 @@ export default function AdminPage() {
       {error && (
         <p style={{ color: "crimson", marginTop: 12 }}>Lỗi: {error}</p>
       )}
-
       {result && result.ok && (
         <div style={{ marginTop: 16 }}>
           <h3>Kết quả:</h3>
