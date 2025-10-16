@@ -4,6 +4,7 @@ import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { parse } from "csv-parse/sync";
 
 type RowObject = Record<string, unknown>;
+type ShipIdRow = { shipment_id: string | number | null };
 
 /* =============== Config =============== */
 const STRICT_SCHEMA = true;          // Header Sheet phải trùng 100% tên cột DB
@@ -254,7 +255,14 @@ async function mirrorDeleteShipments(
     .select("shipment_id");
   if (error) throw new Error(`select shipments for mirror failed: ${error.message}`);
 
-  const inDb = new Set((data || []).map((d: any) => String(d.shipment_id)));
+  const rows = (data ?? []) as ReadonlyArray<ShipIdRow>;
+  const inDb = new Set(
+    rows
+      .map((d) => d?.shipment_id)
+      .filter((v): v is string | number => typeof v === "string" || typeof v === "number")
+      .map((v) => String(v))
+  );
+
   const toDelete = Array.from(inDb).filter((id) => !ids.includes(id));
 
   if (toDelete.length) {
