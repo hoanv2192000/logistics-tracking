@@ -10,7 +10,7 @@ type ShipIdRow = { shipment_id: string | number | null };
 const STRICT_SCHEMA = true;          // Header Sheet phải trùng 100% tên cột DB
 const MIRROR_SHIPMENTS = true;       // Xóa shipment trong DB không còn trong Sheet
 
-// SCHEMA CHUẨN — khớp đúng các header bạn đưa
+// SCHEMA CHUẨN — khớp đúng các header bạn đưa (sheet có thể dùng dấu chấm)
 const SCHEMA = {
   shipments: [
     "shipment_id",
@@ -155,16 +155,87 @@ function sameKeySet(a: ReadonlyArray<string>, b: ReadonlyArray<string>) {
   return true;
 }
 
-/** Loại key rỗng + chỉ cho phép cột trong schema */
-function sanitizeRow(row: RowObject, allowed: Set<string>): RowObject {
+/* ==== Mapping dấu '.' -> '_' cho các bảng milestones (DB dùng cột có '_') ==== */
+const DOT_TO_UNDERSCORE_TABLES = new Set<keyof typeof SCHEMA>([
+  "milestones_sea",
+  "milestones_air",
+]);
+
+function isMilestonesTable(table: keyof typeof SCHEMA) {
+  return DOT_TO_UNDERSCORE_TABLES.has(table);
+}
+function normCol(table: keyof typeof SCHEMA, col: string): string {
+  return isMilestonesTable(table) ? col.replaceAll(".", "_") : col;
+}
+function normalizeRowKeys(
+  table: keyof typeof SCHEMA,
+  row: RowObject
+): RowObject {
+  const out: RowObject = {};
+  for (const [k, v] of Object.entries(row)) {
+    const key = normCol(table, (k ?? "").trim());
+    if (!key) continue;
+    out[key] = v === "" ? null : v;
+  }
+  return out;
+}
+
+/** Chỉ cho phép cột trong schema (đã map dấu) */
+function sanitizeRowForTable(
+  table: keyof typeof SCHEMA,
+  row: RowObject,
+  allowed: Set<string>
+): RowObject {
   const out: RowObject = {};
   for (const [rawK, v] of Object.entries(row)) {
-    const k = (rawK ?? "").trim();
-    if (!k) continue;
+    const k0 = (rawK ?? "").trim();
+    if (!k0) continue;
+    const k = normCol(table, k0);
     if (!allowed.has(k)) continue;
     out[k] = v === "" ? null : v;
   }
   return out;
+}
+
+/** Các khoá bắt buộc theo từng bảng (để loại dòng thiếu khóa) */
+const REQUIRED_KEYS: Record<keyof typeof SCHEMA, string[]> = {
+  shipments: ["shipment_id"],
+  input_sea: ["shipment_id", "container_number"],
+  input_air: ["shipment_id", "flight"],
+  milestones_sea: ["shipment_id"],
+  milestones_air: ["shipment_id"],
+  milestones_notes: ["shipment_id"],
+} as const;
+
+/** Lọc bỏ dòng thiếu khóa bắt buộc (null/""/undefined) */
+function filterRequired(
+  table: keyof typeof SCHEMA,
+  rows: RowObject[]
+): RowObject[] {
+  const required = REQUIRED_KEYS[table] ?? [];
+  const keep: RowObject[] = [];
+  let dropped = 0;
+
+  for (const r of rows) {
+    let ok = true;
+    for (const key of required) {
+      const v = r[key];
+      if (
+        v === null ||
+        v === undefined ||
+        (typeof v === "string" && v.trim().length === 0)
+      ) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) keep.push(r);
+    else dropped++;
+  }
+  if (dropped > 0) {
+    console.warn(`[import] table=${table} dropped ${dropped} row(s) missing required keys: ${required.join(", ")}`);
+  }
+  return keep;
 }
 
 /** Xác minh cột onConflict có trong payload đã lọc */
@@ -187,15 +258,20 @@ async function upsertTable(
 ) {
   if (!rows?.length) return;
 
-  const allowed = new Set<string>(SCHEMA[table]);
+  // Allowed set theo DB (đã map '.' -> '_' nếu là milestones)
+  const allowed = new Set<string>(
+    (SCHEMA[table] as ReadonlyArray<string>).map((c) => normCol(table, c))
+  );
 
-  // STRICT: header CSV phải trùng 100% schema đã khai báo
+  // STRICT: header CSV phải trùng 100% schema đã khai báo (sau khi normalize)
   if (STRICT_SCHEMA && rows.length > 0) {
     const firstRow = rows[0] as RowObject;
-    const csvKeys = Object.keys(firstRow).filter(
-      (k) => String(k).trim().length > 0
+    const csvKeys = Object.keys(firstRow)
+      .filter((k) => String(k).trim().length > 0)
+      .map((k) => normCol(table, k));
+    const schemaKeys = (SCHEMA[table] as ReadonlyArray<string>).map((c) =>
+      normCol(table, c)
     );
-    const schemaKeys = Array.from(SCHEMA[table] as ReadonlyArray<string>);
     if (!sameKeySet(csvKeys, schemaKeys)) {
       const missing = schemaKeys.filter((k) => !csvKeys.includes(k));
       const extra = csvKeys.filter((k) => !schemaKeys.includes(k));
@@ -207,11 +283,19 @@ async function upsertTable(
     }
   }
 
-  const cleaned = rows.map((r) => sanitizeRow(r, allowed));
-  const sampleKeys = Object.keys(cleaned[0] ?? {});
+  const normalizedRows = rows.map((r) => normalizeRowKeys(table, r));
+  const cleaned = normalizedRows.map((r) => sanitizeRowForTable(table, r, allowed));
+
+  // 🔐 Bỏ dòng thiếu khóa bắt buộc (ví dụ shipment_id null)
+  const requiredFiltered = filterRequired(table, cleaned);
+
+  // Nếu sau khi lọc còn 0 thì thôi
+  if (!requiredFiltered.length) return;
+
+  const sampleKeys = Object.keys(requiredFiltered[0] ?? {});
   const hadEmptyKey = Object.keys(rows[0] ?? {}).some((k) => !String(k).trim());
   console.log(
-    `[import] table=${table} onConflict=${onConflict} sampleKeys=`,
+    `[import] table=${table} onConflict=${onConflict} rows=${requiredFiltered.length} sampleKeys=`,
     sampleKeys,
     `hadEmptyKey?`,
     hadEmptyKey
@@ -220,8 +304,8 @@ async function upsertTable(
   ensureConflictColsExist(sampleKeys, onConflict);
 
   const BATCH = 1000;
-  for (let i = 0; i < cleaned.length; i += BATCH) {
-    const chunk = cleaned.slice(i, i + BATCH);
+  for (let i = 0; i < requiredFiltered.length; i += BATCH) {
+    const chunk = requiredFiltered.slice(i, i + BATCH);
     const { error } = await supabase
       .from(table)
       .upsert(chunk as object[], {
@@ -361,7 +445,9 @@ export async function POST(req: NextRequest) {
         for (let i = 0; i < msNotes.length; i += BATCH) {
           const chunk = msNotes
             .slice(i, i + BATCH)
-            .map((r) => sanitizeRow(r, new Set(SCHEMA.milestones_notes)));
+            .map((r) =>
+              sanitizeRowForTable("milestones_notes", r, new Set(SCHEMA.milestones_notes))
+            );
           const { error } = await supabase
             .from("milestones_notes")
             .insert(chunk as object[]);
