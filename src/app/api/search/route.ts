@@ -1,3 +1,4 @@
+// src/app/api/search/route.ts
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
@@ -11,8 +12,9 @@ type SearchRow = {
   mode: string | null;
   mbl_number: string | null;
   hbl_number: string | null;
+  scope_of_service: string | null;
   carrier: string | null;
-  container_number: string | null;
+  containers: string | null; // tên cột trong view là "containers"
   etd_date: string | null;
   atd_date: string | null;
   eta_date: string | null;
@@ -40,101 +42,123 @@ export async function GET(req: Request) {
 
   // So khớp EXACT không phân biệt hoa thường: thử 3 biến thể
   const variants = Array.from(new Set([qRaw, qRaw.toLowerCase(), qRaw.toUpperCase()]));
-  const buildEqOr = (col: string) =>
-    variants.map((v) => `${col}.eq.${v}`).join(",");
+  const buildEqOr = (col: string) => variants.map((v) => `${col}.eq.${v}`).join(",");
+
+  // Like/ilike substring
+  const likeQ = `%${qRaw}%`;
+
+  // Bộ chọn cột từ view
+  const baseSelect = `
+    shipment_id,
+    tracking_id,
+    mode,
+    mbl_number,
+    hbl_number,
+    scope_of_service,
+    carrier,
+    containers,
+    etd_date,
+    atd_date,
+    eta_date,
+    ata_date,
+    pol_aol,
+    pod_aod
+  `;
 
   try {
-    // ---- 1) Exact match theo shipment_id / tracking_id / mbl / hbl ----
-    let query = supabase
-      .from("shipment_search_v")
-      .select(`
-        shipment_id,
-        tracking_id,
-        mode,
-        mbl_number,
-        hbl_number,
-        carrier,
-        container_number,
-        etd_date,
-        atd_date,
-        eta_date,
-        ata_date,
-        pol_aol,
-        pod_aod
-      `)
-      .or(
-        [
-          buildEqOr("shipment_id"),
-          buildEqOr("tracking_id"),
-          buildEqOr("mbl_number"),
-          buildEqOr("hbl_number"),
-        ].join(",")
-      );
+    /* =================== 1) EXACT match =================== */
+    let q1 = supabase.from("shipment_search_v").select(baseSelect).or(
+      [
+        buildEqOr("shipment_id"),
+        buildEqOr("tracking_id"),
+        buildEqOr("mbl_number"),
+        buildEqOr("hbl_number"),
+        buildEqOr("carrier"),
+      ].join(",")
+    );
 
-    if (pol !== "ALL") query = query.eq("pol_aol", pol);
-    if (pod !== "ALL") query = query.eq("pod_aod", pod);
+    if (pol !== "ALL") q1 = q1.eq("pol_aol", pol);
+    if (pod !== "ALL") q1 = q1.eq("pod_aod", pod);
 
-    query = query.order(sortCol, { ascending, nullsFirst: ascending }).limit(200);
+    q1 = q1.order(sortCol, { ascending, nullsFirst: ascending }).limit(200);
+    const exact = await q1;
+    if (exact.error) throw exact.error;
 
-    const { data, error } = await query;
-    if (error) throw error;
+    let finalData = (exact.data ?? []) as SearchRow[];
 
-    // Dùng biến finalData để có thể gán lại (thay vì gán trực tiếp vào data)
-    let finalData = data as SearchRow[];
+    /* =================== 2) ILIKE (substring) =================== */
+    if (finalData.length === 0) {
+      // PostgREST yêu cầu tách .or() theo nhóm; dùng nhiều .or nối nhau
+      let qLike = supabase.from("shipment_search_v").select(baseSelect);
 
-    // ---- 2) Nếu chưa khớp, thử exact match theo CONTAINER ----
-    if (!finalData || finalData.length === 0) {
-      const inSea = await supabase
+      // dùng or cho từng cột để đạt hiệu ứng OR ILIKE
+      qLike = qLike
+        .or(`shipment_id.ilike.${likeQ}`)
+        .or(`tracking_id.ilike.${likeQ}`)
+        .or(`mbl_number.ilike.${likeQ}`)
+        .or(`hbl_number.ilike.${likeQ}`)
+        .or(`carrier.ilike.${likeQ}`);
+
+      if (pol !== "ALL") qLike = qLike.eq("pol_aol", pol);
+      if (pod !== "ALL") qLike = qLike.eq("pod_aod", pod);
+
+      qLike = qLike.order(sortCol, { ascending, nullsFirst: ascending }).limit(200);
+      const got = await qLike;
+      if (got.error) throw got.error;
+
+      finalData = (got.data ?? []) as SearchRow[];
+    }
+
+    /* =================== 3) Tìm CONTAINER =================== */
+    if (finalData.length === 0) {
+      // 3a) Exact container
+      const inSeaExact = await supabase
         .from("input_sea")
         .select("shipment_id")
         .or(buildEqOr("container_number"))
         .limit(200);
 
-      if (inSea.error) throw inSea.error;
+      if (inSeaExact.error) throw inSeaExact.error;
 
-      // Lấy shipment_id an toàn (filter đúng kiểu)
-      const shipmentIds = (inSea.data ?? [])
+      let shipmentIds = (inSeaExact.data ?? [])
         .map((r) => (r as Record<string, unknown>)["shipment_id"])
         .filter(
-          (v): v is string | number =>
-            typeof v === "string" || typeof v === "number"
+          (v): v is string | number => typeof v === "string" || typeof v === "number"
         );
 
-      if (shipmentIds.length > 0) {
-        let q2 = supabase
-          .from("shipment_search_v")
-          .select(`
-            shipment_id,
-            tracking_id,
-            mode,
-            mbl_number,
-            hbl_number,
-            carrier,
-            container_number,
-            etd_date,
-            atd_date,
-            eta_date,
-            ata_date,
-            pol_aol,
-            pod_aod
-          `)
-          .in("shipment_id", shipmentIds);
+      // 3b) Nếu vẫn rỗng, thử ilike container
+      if (shipmentIds.length === 0) {
+        const inSeaLike = await supabase
+          .from("input_sea")
+          .select("shipment_id")
+          .ilike("container_number", likeQ)
+          .limit(200);
 
+        if (inSeaLike.error) throw inSeaLike.error;
+
+        shipmentIds = (inSeaLike.data ?? [])
+          .map((r) => (r as Record<string, unknown>)["shipment_id"])
+          .filter(
+            (v): v is string | number => typeof v === "string" || typeof v === "number"
+          );
+      }
+
+      if (shipmentIds.length > 0) {
+        let q2 = supabase.from("shipment_search_v").select(baseSelect).in("shipment_id", shipmentIds);
         if (pol !== "ALL") q2 = q2.eq("pol_aol", pol);
         if (pod !== "ALL") q2 = q2.eq("pod_aod", pod);
-
         q2 = q2.order(sortCol, { ascending, nullsFirst: ascending }).limit(200);
-        const got = await q2;
-        if (got.error) throw got.error;
 
-        finalData = (got.data ?? []) as SearchRow[];
+        const got2 = await q2;
+        if (got2.error) throw got2.error;
+
+        finalData = (got2.data ?? []) as SearchRow[];
       }
     }
 
-    // Trả kết quả cuối cùng
     return NextResponse.json<{ ok: true; data: SearchRow[] }>({
       ok: true,
-      data: finalData ?? [],
+      data: finalData,
     });
   } catch (e: unknown) {
     console.error("[/api/search] error:", e);
