@@ -106,6 +106,11 @@ function getNoteType(n: Note): string | undefined {
 function getNoteContent(n: Note): string {
   return readString(n, "note") ?? "";
 }
+function getNoteId(n: Note, fallback: string): string {
+  const raw = readUnknown(n, "id");
+  if (typeof raw === "string" || typeof raw === "number") return String(raw);
+  return fallback;
+}
 
 /** Gom milestones thành ordered & extras */
 function groupMilestones(ms: MilestoneAny | null) {
@@ -178,7 +183,7 @@ function getStepExtraValue(mode: string | undefined, stepKey: string, s: Shipmen
   const baseKey = normalizeStepKey(stepKey).split(".")[0];
   const field = STEP_EXTRA_FIELD[m][baseKey as keyof typeof STEP_EXTRA_FIELD["SEA"]];
   if (!field) return null;
-  const val = (s as any)[field];
+  const val = s[field];
   if (val == null) return null;
   const str = String(val).trim();
   return str || null;
@@ -300,7 +305,7 @@ export default function ShipmentClient({ id }: Props) {
   const notesByStep = useMemo(() => groupNotesByStep(data?.notes ?? []), [data?.notes]);
 
   /* ===== NEW: Remarks (useMemo đặt TRƯỚC early return) ===== */
-  const remarksRaw = readString((data?.shipment as any) ?? null, "remarks") ?? "";
+  const remarksRaw = readString(data?.shipment ?? null, "remarks") ?? "";
   const remarksItems = useMemo(() => splitRemarksToBullets(remarksRaw), [remarksRaw]);
 
   /* ========= Loading ========= */
@@ -349,7 +354,7 @@ export default function ShipmentClient({ id }: Props) {
   }
 
   const { ordered, extras } = groupMilestones(data.milestones);
-  const s = data.shipment;
+  const s: Shipment = data.shipment;
 
   // ===== Progress state =====
   const isDoneBase = (o: { status?: string | null; date?: string | null }) => {
@@ -357,7 +362,7 @@ export default function ShipmentClient({ id }: Props) {
     return !!o.date || st.includes("done") || st.includes("complete");
   };
 
-  const transKeyMain = ((s as any).mode === "SEA" ? "step6" : "step5") as "step6" | "step5";
+  const transKeyMain = (s.mode === "SEA" ? "step6" : "step5") as "step6" | "step5";
   const hasAnyTransData = (() => {
     const raw = (data.milestones ?? {}) as Record<string, unknown>;
     const re = new RegExp(`^${transKeyMain}(?:[._]\\d+)?_(?:status|date)$`);
@@ -370,7 +375,7 @@ export default function ShipmentClient({ id }: Props) {
     return false;
   })();
 
-  const finalKeyMain = ((s as any).mode === "SEA" ? "step10" : "step8") as "step10" | "step8";
+  const finalKeyMain = (s.mode === "SEA" ? "step10" : "step8") as "step10" | "step8";
 
   const isDoneWithTrans = (o: { key: string; status?: string | null; date?: string | null }) => {
     if (o.key === transKeyMain && !hasAnyTransData) return true;
@@ -395,8 +400,8 @@ export default function ShipmentClient({ id }: Props) {
   const effectiveStatus =
     latest?.status && latest.date ? `${latest.status} (${formatYMD(latest.date)})` : shipmentStatusFallback || "N/A";
 
-  const tsHas = (s as any).transshipment_ports !== undefined && (s as any).transshipment_ports !== null;
-  const tsDisplay = tsHas ? String((s as any).transshipment_ports || "").trim() || "Yes" : "No";
+  const tsHas = s.transshipment_ports !== undefined && s.transshipment_ports !== null;
+  const tsDisplay = tsHas ? String(s.transshipment_ports || "").trim() || "Yes" : "No";
 
   /* ====== Build display list ====== */
   type ExtraChild = { label: string; date?: string | null; status?: string | null };
@@ -445,14 +450,10 @@ export default function ShipmentClient({ id }: Props) {
 
   const dispSteps: DispStep[] = ordered.map((st, idx) => {
     const label = baseMap[st.key] ?? st.key.toUpperCase();
-    const extraVal = getStepExtraValue((s as any).mode, st.key, s);
+    const extraVal = getStepExtraValue(s.mode as string | undefined, st.key, s);
     const loc = extraVal || null;
     const code =
-      st.key === "step5" && (s as any).pol_aol
-        ? String((s as any).pol_aol)
-        : st.key === "step7" && (s as any).pod_aod
-        ? String((s as any).pod_aod)
-        : null;
+      st.key === "step5" && s.pol_aol ? String(s.pol_aol) : st.key === "step7" && s.pod_aod ? String(s.pod_aod) : null;
     const state = mkState(idx);
     const txt = mkStatusText(st.status, st.date);
     const nlist = notesByStep[st.key] || [];
@@ -511,7 +512,7 @@ export default function ShipmentClient({ id }: Props) {
     <main style={{ padding: 24, maxWidth: 980, margin: "0 auto" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
         <h1 style={{ margin: 0 }}>
-          Shipment {(s as any).shipment_id} — {(s as any).mode}
+          Shipment {s.shipment_id} — {s.mode}
         </h1>
 
         {/* chỉ Copy link */}
@@ -533,10 +534,7 @@ export default function ShipmentClient({ id }: Props) {
       {/* Info */}
       <section className="infoCard">
         <div className="grid2">
-          <KVT
-            k="Shipment ID"
-            v={<span style={{ fontSize: 15, fontWeight: 600 }}>{(s as any).shipment_id ?? "—"}</span>}
-          />
+          <KVT k="Shipment ID" v={<span style={{ fontSize: 15, fontWeight: 600 }}>{s.shipment_id ?? "—"}</span>} />
           <div className="statusRow">
             <span className="statusLbl">Status</span>
             <span className="statusPill">{effectiveStatus}</span>
@@ -544,8 +542,8 @@ export default function ShipmentClient({ id }: Props) {
         </div>
         <div className="divider" />
         <div className="grid2">
-          <KVT k="Mode" v={<span style={{ fontSize: 15, fontWeight: 600 }}>{(s as any).mode ?? "—"}</span>} />
-          <KVT k="Carrier" v={<span style={{ fontSize: 15, fontWeight: 600 }}>{(s as any).carrier ?? "—"}</span>} />
+          <KVT k="Mode" v={<span style={{ fontSize: 15, fontWeight: 600 }}>{s.mode ?? "—"}</span>} />
+          <KVT k="Carrier" v={<span style={{ fontSize: 15, fontWeight: 600 }}>{s.carrier ?? "—"}</span>} />
         </div>
       </section>
 
@@ -554,35 +552,35 @@ export default function ShipmentClient({ id }: Props) {
         <div className="secCard">
           <h3 className="secTitle">BILL OF LADING</h3>
           <div className="secBody">
-            <KVT k="MBL" v={(s as any).mbl_number} />
+            <KVT k="MBL" v={s.mbl_number ?? "—"} />
             <div className="line" />
-            <KVT k="HBL" v={(s as any).hbl_number} />
+            <KVT k="HBL" v={s.hbl_number ?? "—"} />
             <div className="line" />
-            <KVT k="Scope of Service" v={(s as any).scope_of_service} />
+            <KVT k="Scope of Service" v={s.scope_of_service ?? "—"} />
           </div>
         </div>
         <div className="secCard">
           <h3 className="secTitle">ROUTE</h3>
           <div className="secBody">
-            <KVT k="POL/AOL" v={(s as any).pol_aol} />
+            <KVT k="POL/AOL" v={s.pol_aol ?? "—"} />
             <div className="line" />
             <KVT k="Transit" v={tsDisplay} />
             <div className="line" />
-            <KVT k="POD/AOD" v={(s as any).pod_aod} />
+            <KVT k="POD/AOD" v={s.pod_aod ?? "—"} />
             <div className="line" />
             <div style={{ fontSize: 13 }}>
               <div style={{ color: "#64748b" }}>Route</div>
-              <div style={{ color: "#0f172a", fontWeight: 600 }}>{(s as any).route ?? "—"}</div>
+              <div style={{ color: "#0f172a", fontWeight: 600 }}>{s.route ?? "—"}</div>
             </div>
           </div>
         </div>
         <div className="secCard">
           <h3 className="secTitle">TIMELINE</h3>
           <div className="timelineGrid">
-            <KVT k="ETD" v={formatYMD((s as any).etd_date)} />
-            <KVT k="ATD" v={formatYMD((s as any).atd_date)} />
-            <KVT k="ETA" v={formatYMD((s as any).eta_date)} />
-            <KVT k="ATA" v={formatYMD((s as any).ata_date)} />
+            <KVT k="ETD" v={formatYMD(s.etd_date as unknown as string)} />
+            <KVT k="ATD" v={formatYMD(s.atd_date as unknown as string)} />
+            <KVT k="ETA" v={formatYMD(s.eta_date as unknown as string)} />
+            <KVT k="ATA" v={formatYMD(s.ata_date as unknown as string)} />
           </div>
         </div>
       </section>
@@ -601,7 +599,7 @@ export default function ShipmentClient({ id }: Props) {
         )}
       </section>
 
-      {/* ===== Progress ===== */}
+      {/* ===== OVERALL PROGRESS ===== */}
       <section className="hybCard">
         <h3 className="secTitle">OVERALL PROGRESS</h3>
         {/* Sticky mini-bar */}
@@ -707,7 +705,7 @@ export default function ShipmentClient({ id }: Props) {
       <section className="secWrap">
         <h3 className="secHeading">Details</h3>
 
-        {(s as any).mode === "SEA" ? (
+        {s.mode === "SEA" ? (
           data.input_sea.length === 0 ? (
             <p className="muted">No containers.</p>
           ) : (
@@ -719,13 +717,13 @@ export default function ShipmentClient({ id }: Props) {
                 <div>Vessel</div>
                 <div>Voyage</div>
               </div>
-              {data.input_sea.map((c, idx) => (
-                <div className="tRow" key={(c as any).container_number ?? idx}>
+              {data.input_sea.map((c: InputSea, idx: number) => (
+                <div className="tRow" key={c.container_number ?? String(idx)}>
                   <div>{idx + 1}</div>
-                  <div>{(c as any).container_number}</div>
-                  <div>{(c as any).size_type ?? "—"}</div>
-                  <div>{(c as any).vessel ?? "—"}</div>
-                  <div>{(c as any).voyage ?? "—"}</div>
+                  <div>{c.container_number}</div>
+                  <div>{c.size_type ?? "—"}</div>
+                  <div>{c.vessel ?? "—"}</div>
+                  <div>{c.voyage ?? "—"}</div>
                 </div>
               ))}
             </div>
@@ -742,14 +740,14 @@ export default function ShipmentClient({ id }: Props) {
               <div>Gross (kg)</div>
               <div>Chargeable (kg)</div>
             </div>
-            {data.input_air.map((f, idx) => (
-              <div className="tRow" key={(f as any).flight ?? idx}>
+            {data.input_air.map((f: InputAir, idx: number) => (
+              <div className="tRow" key={f.flight ?? String(idx)}>
                 <div>{idx + 1}</div>
-                <div>{(f as any).flight}</div>
-                <div>{readString(f as any, "unit_kind") ?? "—"}</div>
-                <div>{(f as any).pieces ?? "—"}</div>
-                <div>{(f as any).weight_kg ?? "—"}</div>
-                <div>{(f as any).chargeable_weight_kg ?? "—"}</div>
+                <div>{f.flight}</div>
+                <div>{f.unit_kind ?? "—"}</div>
+                <div>{f.pieces ?? "—"}</div>
+                <div>{f.weight_kg ?? "—"}</div>
+                <div>{f.chargeable_weight_kg ?? "—"}</div>
               </div>
             ))}
           </div>
@@ -763,14 +761,15 @@ export default function ShipmentClient({ id }: Props) {
           <p className="muted"> No notes.</p>
         ) : (
           <ul className="noteList">
-            {data.notes.map((n) => {
+            {data.notes.map((n, i) => {
               const tsFmt = getNoteTimeText(n, 19);
               const keyNorm = getStepFromNote(n);
               const label = stepsMap[keyNorm] ?? keyNorm.toUpperCase();
               const type = getNoteType(n);
               const noteText = getNoteContent(n);
+              const keyId = getNoteId(n, `note-${i}-${tsFmt}`);
               return (
-                <li key={(n as any).id} className="noteItem">
+                <li key={keyId} className="noteItem">
                   <span className="dot" />
                   <div className="noteBody">
                     <div className="noteMeta">
@@ -930,8 +929,9 @@ function NotesBox({
           const tsFmt = getNoteTimeText(n, 16);
           const type = getNoteType(n);
           const noteText = getNoteContent(n);
+          const keyId = getNoteId(n, `${tsFmt}-${noteText}`);
           return (
-            <li key={(n as any).id} className="nItem">
+            <li key={keyId} className="nItem">
               <span className="nDot" />
               <div>
                 <div className="nMeta">

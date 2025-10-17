@@ -374,8 +374,12 @@ export default function AdminPage() {
           }
         }
       }
+    
     } catch (err: unknown) {
-      if ((err as any)?.name === "AbortError") {
+      const isAbort =
+      (err instanceof DOMException && err.name === "AbortError") ||
+      (typeof err === "object" && err !== null && "name" in err && (err as { name?: unknown }).name === "AbortError");
+      if (isAbort) {
         setLogs((prev) => [...prev, "⏹ Đã hủy bởi người dùng"]);
       } else {
         setError(err instanceof Error ? err.message : "Network error");

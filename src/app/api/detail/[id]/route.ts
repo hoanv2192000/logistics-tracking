@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET(
   _req: NextRequest,
-  ctx: { params: Promise<{ id: string }> } // Next.js 15: params là Promise
+  ctx: { params: { id: string } } // Next.js 15: params là Promise
 ) {
   const { id } = await ctx.params;
   const supabaseAdmin = getSupabaseAdmin();
