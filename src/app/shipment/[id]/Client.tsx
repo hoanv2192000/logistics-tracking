@@ -204,7 +204,7 @@ function splitRemarksToBullets(raw?: string | null): string[] {
 type Props = { id: string };
 export default function ShipmentClient({ id }: Props) {
   // Lấy dữ liệu qua hook (đã có cache + refetch nền)
-  const { data: hData, loading, error, refetch } = useShipment(id);
+  const { data: hData, loading, refetch } = useShipment(id);
   const data = (hData as Detail | null) ?? null;
 
   // ---- Hooks luôn chạy (trước mọi early-return) ----
@@ -905,8 +905,8 @@ function KVT({ k, v }: { k: string; v?: ReactNode }) {
 
 function NotesBox({
   notes,
-  stepId,
-  stepsMap,
+  stepId: _stepId,
+  stepsMap: _stepsMap,
 }: {
   notes: Note[];
   stepId: string;
