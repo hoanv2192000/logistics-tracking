@@ -912,6 +912,8 @@ function NotesBox({
   stepId: string;
   stepsMap: Record<string, string>;
 }) {
+  void _stepId;
+  void _stepsMap;
   if (!notes || notes.length === 0) {
     return (
       <div className="notesBox">

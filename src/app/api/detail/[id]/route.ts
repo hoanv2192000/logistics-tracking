@@ -5,9 +5,9 @@ import type { Shipment, InputSea, InputAir, MilestoneAny, Note } from "@/types";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type Ctx = { params: { id: string } };
+type RouteCtx = { params: Promise<{ id: string }> };
 
-// Kiểu cho bản ghi notes khi đọc từ Supabase (để lọc active mà không dùng any)
+// Kiểu cho bản ghi notes để lọc cột `active` linh hoạt, không dùng `any`
 type NoteRow = {
   id: string | number;
   shipment_id: string;
@@ -19,8 +19,10 @@ type NoteRow = {
   active?: boolean | number | string | null;
 };
 
-export async function GET(_req: NextRequest, { params }: Ctx) {
-  const { id } = params;
+export async function GET(_req: NextRequest, { params }: RouteCtx) {
+  // Next.js 15: params là Promise
+  const { id } = await params;
+
   const supabaseAdmin = getSupabaseAdmin();
 
   // 1) Shipment
@@ -67,10 +69,10 @@ export async function GET(_req: NextRequest, { params }: Ctx) {
     .order("id", { ascending: false });
 
   const isActive = (v: boolean | number | string | null | undefined): boolean => {
-    if (v === true) return true; // boolean true
-    if (typeof v === "number") return v === 1; // 1
+    if (v === true) return true;
+    if (typeof v === "number") return v === 1;
     if (typeof v === "string") {
-      const s = v.trim().toLowerCase(); // "TRUE", "true", "1", "t", "yes", "y"
+      const s = v.trim().toLowerCase(); // "TRUE","true","1","t","yes","y"
       return s === "true" || s === "1" || s === "t" || s === "yes" || s === "y";
     }
     return false;
