@@ -7,9 +7,9 @@ export const dynamic = "force-dynamic";
 
 export async function GET(
   _req: NextRequest,
-  ctx: { params: Promise<{ id: string }> } // 👈 Next.js 15: params là Promise
+  ctx: { params: Promise<{ id: string }> } // Next.js 15: params là Promise
 ) {
-  const { id } = await ctx.params; // 👈 giải Promise để lấy id
+  const { id } = await ctx.params;
   const supabaseAdmin = getSupabaseAdmin();
 
   // 1) Shipment
@@ -47,13 +47,24 @@ export async function GET(
     milestones = (data as MilestoneAny) ?? null;
   }
 
-  // 4) Notes
-  const { data: notes } = await supabaseAdmin
+  // 4) Notes — KHÔNG lọc active ở DB; lọc ở server để chấp nhận nhiều kiểu
+  const { data: notesRaw } = await supabaseAdmin
     .from("milestones_notes")
-    .select("*")
+    .select("id, shipment_id, mode, step, note, note_type, note_time, active")
     .eq("shipment_id", id)
-    .eq("active", true)
-    .order("note_time", { ascending: false });
+    .order("note_time", { ascending: false, nullsFirst: false })
+    .order("id", { ascending: false });
+
+  const notes: Note[] = (notesRaw ?? []).filter((n: any) => {
+    const v = n?.active;
+    if (v === true) return true;                       // boolean true
+    if (typeof v === "number") return v === 1;         // 1
+    if (typeof v === "string") {
+      const s = v.trim().toLowerCase();               // "TRUE", "true", "1", "t", "yes", "y"
+      return s === "true" || s === "1" || s === "t" || s === "yes" || s === "y";
+    }
+    return false;
+  }) as Note[];
 
   return NextResponse.json({
     ok: true,
@@ -62,7 +73,7 @@ export async function GET(
       input_sea: (seaRes.data || []) as InputSea[],
       input_air: (airRes.data || []) as InputAir[],
       milestones,
-      notes: (notes || []) as Note[],
+      notes,
     },
   });
 }

@@ -1,5 +1,5 @@
 "use client";
-
+import { prefetchShipment } from "@/lib/useShipment";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type { SearchRow } from "@/types";
@@ -96,7 +96,8 @@ export default function Page() {
     const cached = lruSearchGet<SearchRow[]>(key);
     if (cached) {
       setRows(cached);
-      return;
+      // [CHANGED] không return nữa — tiếp tục refetch nền để làm tươi
+      // return;
     }
 
     if (abortRef.current) abortRef.current.abort();
@@ -112,10 +113,12 @@ export default function Page() {
         sortBy,
         dir,
       });
+      // [CHANGED] thêm cache-buster để tránh cache; bỏ option cache để không lỗi TS
+      params.set("_t", String(Date.now()));
+
       const res = await fetch(`/api/search?${params.toString()}`, {
-        cache: "no-store",
-        signal: ac.signal,
-      });
+        signal: ac.signal, // [CHANGED] chỉ truyền signal
+      } as RequestInit);
       const json: { ok: boolean; data?: SearchRow[] } = await res.json();
       const data = (json.data || []) as SearchRow[];
       setRows(data);
@@ -150,6 +153,14 @@ export default function Page() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [loading]);
+
+  // [CHANGED] đảm bảo huỷ request nếu rời trang/unmount
+  useEffect(() => {
+    return () => {
+      if (abortRef.current) abortRef.current.abort();
+      abortRef.current = null;
+    };
+  }, []);
 
   function clearAll() {
     setQ("");
@@ -323,6 +334,8 @@ export default function Page() {
                             className="btn-premium"
                             title="View details"
                             aria-label="View details"
+                            onMouseEnter={() => x.shipment_id && prefetchShipment(String(x.shipment_id))}  // ← thêm
+                            onFocus={() => x.shipment_id && prefetchShipment(String(x.shipment_id))}
                           >
                             <svg
                               className="btn-premium-ico"
@@ -428,7 +441,7 @@ export default function Page() {
           margin: 0;
           font-size: 28px;
           font-weight: 800;
-          color: var(--text);
+          color: #0f172a;
         }
         .total {
           font-size: 12px;

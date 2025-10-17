@@ -1,12 +1,10 @@
 import ShipmentClient from "./Client";
 
-export default async function ShipmentPage({
+export default function ShipmentPage({
   params,
 }: {
-  params: Promise<{ id: string }>;
+  params: { id: string };
 }) {
-  const { id } = await params;
+  const { id } = params; // không cần await
   return <ShipmentClient id={id} />;
 }
-
-

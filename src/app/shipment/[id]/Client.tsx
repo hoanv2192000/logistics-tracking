@@ -2,10 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { supabaseClient } from "@/lib/supabaseClient";
-import { cacheGetDetail, cacheSetDetail, dedupe } from "@/lib/cache";
 import type { Shipment, InputSea, InputAir, MilestoneAny, Note } from "@/types";
+import { useShipment } from "@/lib/useShipment";
 
-/* ================= Types & fetch ================= */
+/* ================= Types ================= */
 type Detail = {
   shipment: Shipment;
   input_sea: InputSea[];
@@ -13,18 +13,6 @@ type Detail = {
   milestones: MilestoneAny | null;
   notes: Note[];
 };
-
-async function fetchDetailOnce(id: string): Promise<Detail | null> {
-  const res = await fetch(`/api/detail/${id}`, { cache: "no-store" });
-  if (!res.ok) return null;
-  const json = await res.json();
-  return json.data as Detail;
-}
-
-// fetch có de-dupe theo id (tránh bấm nhanh nhiều nơi cùng fetch)
-function fetchDetail(id: string) {
-  return dedupe<Detail | null>(`detail:${id}`, () => fetchDetailOnce(id));
-}
 
 /* ================= Labels ================= */
 const SEA_STEPS: Record<string, string> = {
@@ -91,7 +79,7 @@ function readUnknown(obj: unknown, key: string): unknown {
   return rec[key];
 }
 
-/** Helpers cho Note (không dùng any) */
+/** Helpers cho Note */
 function getStepFromNote(n: Note): string {
   const raw = readUnknown(n, "step");
   return normalizeStepKey(typeof raw === "string" ? raw : undefined);
@@ -119,7 +107,7 @@ function getNoteContent(n: Note): string {
   return readString(n, "note") ?? "";
 }
 
-/** Gom milestones thành ordered & extras (giữ logic cũ) */
+/** Gom milestones thành ordered & extras */
 function groupMilestones(ms: MilestoneAny | null) {
   if (!ms) {
     return {
@@ -190,56 +178,42 @@ function getStepExtraValue(mode: string | undefined, stepKey: string, s: Shipmen
   const baseKey = normalizeStepKey(stepKey).split(".")[0];
   const field = STEP_EXTRA_FIELD[m][baseKey as keyof typeof STEP_EXTRA_FIELD["SEA"]];
   if (!field) return null;
-  const val = s[field];
+  const val = (s as any)[field];
   if (val == null) return null;
   const str = String(val).trim();
   return str || null;
 }
 
+/* ===== helper format remarks -> bullet lines ===== */
+function splitRemarksToBullets(raw?: string | null): string[] {
+  const s = (raw ?? "").trim();
+  if (!s) return [];
+  return s
+    .split(/[;\n]+/g) // tách theo ; hoặc xuống dòng
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .map((x) => (x ? x.charAt(0).toUpperCase() + x.slice(1) : x)); // Viết hoa chữ cái đầu
+}
+
 /* ================= MAIN ================= */
-export default function ShipmentClient({ id }: { id: string }) {
-  // ---- Hooks luôn chạy (đặt sớm, trước mọi early-return) ----
+type Props = { id: string };
+export default function ShipmentClient({ id }: Props) {
+  // Lấy dữ liệu qua hook (đã có cache + refetch nền)
+  const { data: hData, loading, error, refetch } = useShipment(id);
+  const data = (hData as Detail | null) ?? null;
+
+  // ---- Hooks luôn chạy (trước mọi early-return) ----
   const liRefs = useRef<Record<string, HTMLLIElement | null>>({});
   const [highlight, setHighlight] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
   const stickyRef = useRef<HTMLDivElement | null>(null);
-  // -----------------------------------------------------------
-
-  const [data, setData] = useState<Detail | null>(null);
-  const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
 
-  // ===== 1) Đọc cache ngay lập tức (mở lần 2 sẽ hiển thị tức thì)
-  useEffect(() => {
-    const cached = cacheGetDetail<Detail>(id);
-    if (cached) {
-      setData(cached);
-      setLoading(false);
-    } else {
-      setLoading(true);
-    }
-  }, [id]);
+  // === Phần đường xanh lá trên rail ===
+  const vWrapRef = useRef<HTMLDivElement | null>(null);
+  const [railFill, setRailFill] = useState(0);
 
-  // ===== 2) Refetch nền để làm tươi (dù có cache vẫn gọi nền)
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      const fresh = await fetchDetail(id);
-      if (alive && fresh) {
-        cacheSetDetail(id, fresh);
-        setData(fresh);
-        setLoading(false);
-      } else if (alive && fresh === null && !data) {
-        setLoading(false);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
-
-  // ===== 3) Debounce realtime
+  // Realtime debounce
   useEffect(() => {
     const channel = supabaseClient.channel(`ship-${id}`);
     const tables = [
@@ -260,20 +234,12 @@ export default function ShipmentClient({ id }: { id: string }) {
         timer = null;
         if (!pending) return;
         pending = false;
-        const fresh = await fetchDetail(id);
-        if (fresh) {
-          cacheSetDetail(id, fresh);
-          setData(fresh);
-        }
+        await refetch();
       }, 800);
     };
 
     for (const t of tables) {
-      channel.on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: t.table, filter: t.filter },
-        scheduleRefetch
-      );
+      channel.on("postgres_changes", { event: "*", schema: "public", table: t.table, filter: t.filter }, scheduleRefetch);
     }
     channel.subscribe();
 
@@ -281,7 +247,48 @@ export default function ShipmentClient({ id }: { id: string }) {
       if (timer) clearTimeout(timer);
       supabaseClient.removeChannel(channel);
     };
-  }, [id]);
+  }, [id, refetch]);
+
+  // === TÍNH CHIỀU CAO ĐƯỜNG XANH (đọc DOM) ===
+  useEffect(() => {
+    const calc = () => {
+      const wrap = vWrapRef.current;
+      if (!wrap) {
+        setRailFill(0);
+        return;
+      }
+
+      const rail = wrap.querySelector<HTMLElement>(".rail");
+      const doneNodes = Array.from(wrap.querySelectorAll<HTMLElement>(".vItem .nodeDone"));
+      if (!rail || doneNodes.length === 0) {
+        setRailFill(0);
+        return;
+      }
+
+      const lastNode = doneNodes[doneNodes.length - 1];
+      if (!lastNode) {
+        setRailFill(0);
+        return;
+      }
+
+      const wrapRect = wrap.getBoundingClientRect();
+      const railRect = rail.getBoundingClientRect();
+      const nodeRect = lastNode.getBoundingClientRect();
+
+      const railTopInWrap = railRect.top - wrapRect.top;
+      const centerInWrap = nodeRect.top - wrapRect.top + nodeRect.height / 2;
+
+      const height = Math.max(0, Math.min(centerInWrap - railTopInWrap, railRect.height));
+      setRailFill(height);
+    };
+
+    const r = requestAnimationFrame(calc);
+    window.addEventListener("resize", calc);
+    return () => {
+      cancelAnimationFrame(r);
+      window.removeEventListener("resize", calc);
+    };
+  }, [showAll, highlight, data?.milestones]);
 
   const stepsMap = useMemo(() => {
     const isSea = data?.shipment?.mode === "SEA";
@@ -292,7 +299,11 @@ export default function ShipmentClient({ id }: { id: string }) {
 
   const notesByStep = useMemo(() => groupNotesByStep(data?.notes ?? []), [data?.notes]);
 
-  /* ========= Loading (Skeleton premium) ========= */
+  /* ===== NEW: Remarks (useMemo đặt TRƯỚC early return) ===== */
+  const remarksRaw = readString((data?.shipment as any) ?? null, "remarks") ?? "";
+  const remarksItems = useMemo(() => splitRemarksToBullets(remarksRaw), [remarksRaw]);
+
+  /* ========= Loading ========= */
   if (loading || !data) {
     return (
       <main style={{ padding: 24, maxWidth: 980, margin: "0 auto" }}>
@@ -301,17 +312,14 @@ export default function ShipmentClient({ id }: { id: string }) {
             <div className="sktLogo" />
             <div className="sktTitle" />
           </div>
-
           <div className="sktRow">
             <div className="sktCard" />
             <div className="sktCard" />
             <div className="sktCard" />
           </div>
-
           <div className="sktProgress">
             <div className="sktBar" />
           </div>
-
           <div className="sktTable">
             <div className="sktTh" />
             <div className="sktTr" />
@@ -319,7 +327,6 @@ export default function ShipmentClient({ id }: { id: string }) {
             <div className="sktTr" />
           </div>
         </div>
-
         <style jsx>{`
           .sktWrap{display:flex;flex-direction:column;gap:18px}
           .sktHeader{display:flex;align-items:center;gap:12px}
@@ -329,7 +336,7 @@ export default function ShipmentClient({ id }: { id: string }) {
           .sktCard{height:96px;border-radius:14px;background:linear-gradient(90deg,#eef2f7 25%,#f7f9fc 37%,#eef2f7 63%);background-size:400px 100%;animation:shimmer 1.4s infinite}
           .sktProgress{height:16px;border-radius:999px;overflow:hidden;background:#ecf0f6}
           .sktBar{height:100%;width:40%;border-radius:999px;background:linear-gradient(90deg,#dbeafe,#e0f2fe,#dbeafe);animation:loadbar 1.6s infinite}
-          .sktTable{border:1px solid #e6eaf2;border-radius:16px;padding:12px;background:#fff;box-shadow:0 10px 28px rgba(15,23,42,.05)}
+          .sktTable{border:1px solid #e6eaf2;border-radius:16px;padding:12px;background:#fff;box-shadow:0 10px 28px rgba(15,23,42,0.05)}
           .sktTh{height:18px;border-radius:8px;background:linear-gradient(90deg,#eef2f7 25%,#f7f9fc 37%,#eef2f7 63%);background-size:400px 100%;animation:shimmer 1.4s infinite;margin-bottom:10px}
           .sktTr{height:46px;border-radius:10px;background:linear-gradient(90deg,#eef2f7 25%,#f7f9fc 37%,#eef2f7 63%);background-size:400px 100%;animation:shimmer 1.4s infinite}
           .sktTr + .sktTr{margin-top:8px}
@@ -345,11 +352,36 @@ export default function ShipmentClient({ id }: { id: string }) {
   const s = data.shipment;
 
   // ===== Progress state =====
-  const isDone = (o: { status?: string | null; date?: string | null }) => {
+  const isDoneBase = (o: { status?: string | null; date?: string | null }) => {
     const st = (o.status || "").toLowerCase();
     return !!o.date || st.includes("done") || st.includes("complete");
   };
-  const firstTodoIdx = ordered.findIndex((o) => !isDone(o));
+
+  const transKeyMain = ((s as any).mode === "SEA" ? "step6" : "step5") as "step6" | "step5";
+  const hasAnyTransData = (() => {
+    const raw = (data.milestones ?? {}) as Record<string, unknown>;
+    const re = new RegExp(`^${transKeyMain}(?:[._]\\d+)?_(?:status|date)$`);
+    for (const [k, v] of Object.entries(raw)) {
+      if (re.test(k)) {
+        const val = (v ?? "").toString().trim();
+        if (val !== "") return true;
+      }
+    }
+    return false;
+  })();
+
+  const finalKeyMain = ((s as any).mode === "SEA" ? "step10" : "step8") as "step10" | "step8";
+
+  const isDoneWithTrans = (o: { key: string; status?: string | null; date?: string | null }) => {
+    if (o.key === transKeyMain && !hasAnyTransData) return true;
+    if (o.key === finalKeyMain) {
+      const st = (o.status || "").toLowerCase();
+      if (st.includes("delivered")) return true;
+    }
+    return isDoneBase(o);
+  };
+
+  const firstTodoIdx = ordered.findIndex((o) => !isDoneWithTrans(o));
   const currentIdx = firstTodoIdx === -1 ? Math.max(0, ordered.length - 1) : firstTodoIdx;
   const percent = Math.min(100, Math.round(((currentIdx + 1) / Math.max(1, ordered.length)) * 100));
 
@@ -363,8 +395,8 @@ export default function ShipmentClient({ id }: { id: string }) {
   const effectiveStatus =
     latest?.status && latest.date ? `${latest.status} (${formatYMD(latest.date)})` : shipmentStatusFallback || "N/A";
 
-  const tsHas = s.transshipment_ports !== undefined && s.transshipment_ports !== null;
-  const tsDisplay = tsHas ? String(s.transshipment_ports || "").trim() || "Yes" : "No";
+  const tsHas = (s as any).transshipment_ports !== undefined && (s as any).transshipment_ports !== null;
+  const tsDisplay = tsHas ? String((s as any).transshipment_ports || "").trim() || "Yes" : "No";
 
   /* ====== Build display list ====== */
   type ExtraChild = { label: string; date?: string | null; status?: string | null };
@@ -383,15 +415,20 @@ export default function ShipmentClient({ id }: { id: string }) {
   const transitKey = data.shipment.mode === "SEA" ? "step6" : "step5";
 
   function mkStatusText(st?: string | null, dt?: string | null) {
-    const sst = (st || "").toLowerCase();
-    if (sst.includes("in-transit") || sst.includes("in transit")) return `In-Transit (${formatYMD(dt)})`;
-    if (sst.includes("planned") || sst.includes("pending")) return dt ? `Planned (${formatYMD(dt)})` : "Pending";
-    if (sst.includes("done") || sst.includes("complete") || dt) return `Done (${formatYMD(dt)})`;
+    const raw = (st ?? "").trim();
+    if (raw) {
+      return `${raw}${dt ? ` (${formatYMD(dt)})` : ""}`;
+    }
+    if (dt) return `Done (${formatYMD(dt)})`;
     return "N/A";
   }
-  function mkState(idx: number, st?: string | null): DispStep["status"] {
+
+  function mkState(idx: number): DispStep["status"] {
     if (idx < currentIdx) return "done";
-    if (idx === currentIdx && !(st || "").toLowerCase().includes("done")) return "current";
+    if (idx === currentIdx) {
+      const obj = ordered[idx];
+      return obj && isDoneWithTrans(obj) ? "done" : "current";
+    }
     return "pending";
   }
 
@@ -408,11 +445,15 @@ export default function ShipmentClient({ id }: { id: string }) {
 
   const dispSteps: DispStep[] = ordered.map((st, idx) => {
     const label = baseMap[st.key] ?? st.key.toUpperCase();
-    const extraVal = getStepExtraValue(s.mode, st.key, s);
+    const extraVal = getStepExtraValue((s as any).mode, st.key, s);
     const loc = extraVal || null;
     const code =
-      st.key === "step5" && s.pol_aol ? String(s.pol_aol) : st.key === "step7" && s.pod_aod ? String(s.pod_aod) : null;
-    const state = mkState(idx, st.status);
+      st.key === "step5" && (s as any).pol_aol
+        ? String((s as any).pol_aol)
+        : st.key === "step7" && (s as any).pod_aod
+        ? String((s as any).pod_aod)
+        : null;
+    const state = mkState(idx);
     const txt = mkStatusText(st.status, st.date);
     const nlist = notesByStep[st.key] || [];
     return {
@@ -470,10 +511,10 @@ export default function ShipmentClient({ id }: { id: string }) {
     <main style={{ padding: 24, maxWidth: 980, margin: "0 auto" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
         <h1 style={{ margin: 0 }}>
-          Shipment {s.shipment_id} — {s.mode}
+          Shipment {(s as any).shipment_id} — {(s as any).mode}
         </h1>
 
-        {/* ĐÃ BỎ STATUS Ở HEADER — chỉ còn nút Copy link */}
+        {/* chỉ Copy link */}
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <button
             onClick={async () => {
@@ -492,7 +533,10 @@ export default function ShipmentClient({ id }: { id: string }) {
       {/* Info */}
       <section className="infoCard">
         <div className="grid2">
-          <KVT k="Shipment ID" v={<span style={{ fontSize: 15, fontWeight: 600 }}>{s.shipment_id ?? "—"}</span>} />
+          <KVT
+            k="Shipment ID"
+            v={<span style={{ fontSize: 15, fontWeight: 600 }}>{(s as any).shipment_id ?? "—"}</span>}
+          />
           <div className="statusRow">
             <span className="statusLbl">Status</span>
             <span className="statusPill">{effectiveStatus}</span>
@@ -500,8 +544,8 @@ export default function ShipmentClient({ id }: { id: string }) {
         </div>
         <div className="divider" />
         <div className="grid2">
-          <KVT k="Mode" v={<span style={{ fontSize: 15, fontWeight: 600 }}>{s.mode ?? "—"}</span>} />
-          <KVT k="Carrier" v={<span style={{ fontSize: 15, fontWeight: 600 }}>{s.carrier ?? "—"}</span>} />
+          <KVT k="Mode" v={<span style={{ fontSize: 15, fontWeight: 600 }}>{(s as any).mode ?? "—"}</span>} />
+          <KVT k="Carrier" v={<span style={{ fontSize: 15, fontWeight: 600 }}>{(s as any).carrier ?? "—"}</span>} />
         </div>
       </section>
 
@@ -510,60 +554,52 @@ export default function ShipmentClient({ id }: { id: string }) {
         <div className="secCard">
           <h3 className="secTitle">BILL OF LADING</h3>
           <div className="secBody">
-            <KVT k="MBL" v={s.mbl_number} />
+            <KVT k="MBL" v={(s as any).mbl_number} />
             <div className="line" />
-            <KVT k="HBL" v={s.hbl_number} />
+            <KVT k="HBL" v={(s as any).hbl_number} />
             <div className="line" />
-            <KVT k="Scope of Service" v={s.scope_of_service} />
+            <KVT k="Scope of Service" v={(s as any).scope_of_service} />
           </div>
         </div>
         <div className="secCard">
           <h3 className="secTitle">ROUTE</h3>
           <div className="secBody">
-            <KVT k="POL/AOL" v={s.pol_aol} />
+            <KVT k="POL/AOL" v={(s as any).pol_aol} />
             <div className="line" />
             <KVT k="Transit" v={tsDisplay} />
             <div className="line" />
-            <KVT k="POD/AOD" v={s.pod_aod} />
+            <KVT k="POD/AOD" v={(s as any).pod_aod} />
             <div className="line" />
             <div style={{ fontSize: 13 }}>
               <div style={{ color: "#64748b" }}>Route</div>
-              <div style={{ color: "#0f172a", fontWeight: 600 }}>{s.route ?? "—"}</div>
+              <div style={{ color: "#0f172a", fontWeight: 600 }}>{(s as any).route ?? "—"}</div>
             </div>
           </div>
         </div>
         <div className="secCard">
           <h3 className="secTitle">TIMELINE</h3>
           <div className="timelineGrid">
-            <KVT k="ETD" v={formatYMD(s.etd_date)} />
-            <KVT k="ATD" v={formatYMD(s.atd_date)} />
-            <KVT k="ETA" v={formatYMD(s.eta_date)} />
-            <KVT k="ATA" v={formatYMD(s.ata_date)} />
+            <KVT k="ETD" v={formatYMD((s as any).etd_date)} />
+            <KVT k="ATD" v={formatYMD((s as any).atd_date)} />
+            <KVT k="ETA" v={formatYMD((s as any).eta_date)} />
+            <KVT k="ATA" v={formatYMD((s as any).ata_date)} />
           </div>
         </div>
       </section>
 
-      {/* ===== REMARKS ===== */}
-      {s.remarks && s.remarks.trim() !== "" && (
-        <section className="remarksCard">
-          <h3 className="secTitle">REMARKS</h3>
-          <div className="remarksBody">
-            {s.remarks
-              .split(";")
-              .map((line) => line.trim())
-              .filter(Boolean)
-              .map((line, idx) => {
-                const formatted = line.charAt(0).toUpperCase() + line.slice(1);
-                return (
-                  <div key={idx} className="remarkLine">
-                    <span className="bullet">•</span>
-                    <span className="remarkText">{formatted}</span>
-                  </div>
-                );
-              })}
-          </div>
-        </section>
-      )}
+      {/* ===== Remarks ===== */}
+      <section className="secCard remarksCard">
+        <h3 className="secTitle">REMARKS</h3>
+        {remarksItems.length === 0 ? (
+          <div className="muted">—</div>
+        ) : (
+          <ul className="remarksList">
+            {remarksItems.map((t, i) => (
+              <li key={i}>{t}</li>
+            ))}
+          </ul>
+        )}
+      </section>
 
       {/* ===== Progress ===== */}
       <section className="hybCard">
@@ -602,15 +638,15 @@ export default function ShipmentClient({ id }: { id: string }) {
         </div>
 
         {/* Vertical timeline */}
-        <div className="vWrap">
+        <div className="vWrap" ref={vWrapRef}>
           <div className="rail" />
+          <div className="railFill" style={{ height: railFill }} />
           <ul className="vList">
             {visibleSteps.map((d, idx) => {
               const sideRight = idx % 2 === 1;
               const isFocus = highlight === d.id;
               return (
                 <li key={d.id} ref={getRef(d.id)} id={d.id} className="vItem">
-                  {/* node */}
                   <div
                     className={
                       "node " + (d.status === "done" ? "nodeDone" : d.status === "current" ? "nodeCur" : "nodeTodo")
@@ -619,7 +655,6 @@ export default function ShipmentClient({ id }: { id: string }) {
                     <span className="nodeSym">{d.status === "done" ? "✓" : d.status === "current" ? "•" : ""}</span>
                   </div>
 
-                  {/* card */}
                   <div className={`card ${sideRight ? "cardR" : "cardL"} ${isFocus ? "cardFocus" : ""}`}>
                     <div className="cardTop">
                       <h3 className="ttl">
@@ -629,7 +664,6 @@ export default function ShipmentClient({ id }: { id: string }) {
                           {d.location ? <span className="loc"> / {d.location}</span> : null}
                         </span>
                       </h3>
-                      <span className="badge">{d.status.toUpperCase()}</span>
                     </div>
 
                     <div className="sub">
@@ -637,7 +671,6 @@ export default function ShipmentClient({ id }: { id: string }) {
                       {d.code ? `  •  ${d.code}` : ""}
                     </div>
 
-                    {/* ==== Extra Transshipment compact box ==== */}
                     {d.children && d.children.length > 0 && (
                       <div className="extraBox" aria-label="Extra Transshipment list">
                         {d.children.map((c, i2) => (
@@ -674,7 +707,7 @@ export default function ShipmentClient({ id }: { id: string }) {
       <section className="secWrap">
         <h3 className="secHeading">Details</h3>
 
-        {s.mode === "SEA" ? (
+        {(s as any).mode === "SEA" ? (
           data.input_sea.length === 0 ? (
             <p className="muted">No containers.</p>
           ) : (
@@ -687,12 +720,12 @@ export default function ShipmentClient({ id }: { id: string }) {
                 <div>Voyage</div>
               </div>
               {data.input_sea.map((c, idx) => (
-                <div className="tRow" key={c.container_number ?? idx}>
+                <div className="tRow" key={(c as any).container_number ?? idx}>
                   <div>{idx + 1}</div>
-                  <div>{c.container_number}</div>
-                  <div>{c.size_type ?? "—"}</div>
-                  <div>{c.vessel ?? "—"}</div>
-                  <div>{c.voyage ?? "—"}</div>
+                  <div>{(c as any).container_number}</div>
+                  <div>{(c as any).size_type ?? "—"}</div>
+                  <div>{(c as any).vessel ?? "—"}</div>
+                  <div>{(c as any).voyage ?? "—"}</div>
                 </div>
               ))}
             </div>
@@ -710,13 +743,13 @@ export default function ShipmentClient({ id }: { id: string }) {
               <div>Chargeable (kg)</div>
             </div>
             {data.input_air.map((f, idx) => (
-              <div className="tRow" key={f.flight ?? idx}>
+              <div className="tRow" key={(f as any).flight ?? idx}>
                 <div>{idx + 1}</div>
-                <div>{f.flight}</div>
-                <div>{readString(f, "unit_kind") ?? "—"}</div>
-                <div>{f.pieces ?? "—"}</div>
-                <div>{f.weight_kg ?? "—"}</div>
-                <div>{f.chargeable_weight_kg ?? "—"}</div>
+                <div>{(f as any).flight}</div>
+                <div>{readString(f as any, "unit_kind") ?? "—"}</div>
+                <div>{(f as any).pieces ?? "—"}</div>
+                <div>{(f as any).weight_kg ?? "—"}</div>
+                <div>{(f as any).chargeable_weight_kg ?? "—"}</div>
               </div>
             ))}
           </div>
@@ -725,9 +758,9 @@ export default function ShipmentClient({ id }: { id: string }) {
 
       {/* ===== Notes tổng hợp ===== */}
       <section className="notesCard">
-        <h3 className="secTitle">Notes</h3>
+        <h3 className="secTitle">NOTES</h3>
         {data.notes.length === 0 ? (
-          <p className="muted">Chưa có ghi chú.</p>
+          <p className="muted"> No notes.</p>
         ) : (
           <ul className="noteList">
             {data.notes.map((n) => {
@@ -737,7 +770,7 @@ export default function ShipmentClient({ id }: { id: string }) {
               const type = getNoteType(n);
               const noteText = getNoteContent(n);
               return (
-                <li key={n.id} className="noteItem">
+                <li key={(n as any).id} className="noteItem">
                   <span className="dot" />
                   <div className="noteBody">
                     <div className="noteMeta">
@@ -778,14 +811,11 @@ export default function ShipmentClient({ id }: { id: string }) {
         .timelineGrid{display:grid;grid-template-columns:1fr 1fr;gap:10px 20px}
         @media (max-width:860px){.secGrid{grid-template-columns:1fr}}
 
-        /* ===== Remarks card ===== */
-        .remarksCard{margin-top:16px;border-radius:16px;border:1px solid #e6eaf2;background:linear-gradient(180deg,#fff,#fafbff);box-shadow:0 10px 28px rgba(15, 23, 42,.06);padding:14px 16px}
-        .remarksBody{display:flex;flex-direction:column;gap:6px;margin-top:6px}
-        .remarkLine{display:flex;align-items:flex-start;gap:8px;font-size:13.5px;color:#0f172a;line-height:1.45}
-        .bullet{color:#22c55e;font-weight:700;font-size:16px;line-height:1}
-        .remarkText{flex:1;font-weight:500}
+        /* Remarks */
+        .remarksCard{margin-top:0}
+        .remarksList{margin:0;padding-left:18px;list-style:disc}
+        .remarksList li{margin:4px 0;color:#0f172a;font-weight:600}
 
-        /* Progress + chips */
         .hybCard{margin-top:16px;border-radius:18px;border:1px solid #e6eaf2;background:linear-gradient(180deg,#fff 0%,#f7f9fc 100%);box-shadow:0 14px 36px rgba(15,23,42,.08);padding:16px}
         .stickyWrap{position:sticky;top:0;z-index:20}
         .miniBar{border:1px solid #e5e7eb;background:#fff;border-radius:16px;box-shadow:0 6px 16px rgba(15,23,42,.06);padding:10px 12px}
@@ -795,15 +825,13 @@ export default function ShipmentClient({ id }: { id: string }) {
         .chips{display:flex;gap:8px;overflow-x:auto;padding-top:6px;padding-bottom:2px}
         .chip{white-space:nowrap;border-radius:999px;padding:4px 8px;font-size:11px;border:1px solid;transition:all .15s ease;cursor:pointer}
         .chipDone{background:#eafff2;border-color:#a7f3d0;color:#065f46}
-        .chipDone:hover{background:#16a34a;border-color:#15803d;color:#fff;box-shadow:0 0 0 2px rgba(22,163,74,.25)}
         .chipCurrent{background:#fff7ed;border-color:#fdba74;color:#9a3412;box-shadow:0 0 0 2px #fed7aa}
-        .chipCurrent:hover{background:#fb923c;border-color:#f97316;color:#fff;box-shadow:0 0 0 2px rgba(251,146,60,.30)}
         .chipTodo{background:#f6f7fb;border-color:#e5e7eb;color:#667085}
         .chipTodo:hover{background:#cbd5e1;border-color:#94a3b8;color:#111827}
 
-        /* Vertical timeline */
         .vWrap{position:relative;background:#fff;border-radius:18px;box-shadow:0 8px 20px rgba(15,23,42,.06);padding:20px;margin-top:10px}
-        .rail{position:absolute;left:50%;top:24px;bottom:24px;transform:translateX(-50%);border-left:2px dashed #d1d5db;pointer-events:none;z-index:0}
+        .rail{position:absolute;left:50%;top:28px;bottom:150px;transform:translateX(-50%);border-left:2px dashed #d1d5db;pointer-events:none;z-index:0}
+        .railFill{position:absolute;left:50%;top:28px;transform:translateX(-50%);border-left:2px solid #10b981;height:0;z-index:1;transition:height .25s ease}
         .vList{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:18px}
         .vItem{position:relative;padding-top:8px}
         .node{position:absolute;left:50%;top:8px;transform:translateX(-50%);width:28px;height:28px;border-radius:50%;display:grid;place-items:center;border:2px solid;z-index:2}
@@ -813,19 +841,16 @@ export default function ShipmentClient({ id }: { id: string }) {
         .nodeSym{font-size:12px}
         @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(251,146,60,.35)}70%{box-shadow:0 0 0 10px rgba(251,146,60,0)}100%{box-shadow:0 0 0 0 rgba(251,146,60,0)}}
 
-        /* Card & focus */
         .card{position:relative;z-index:1;width:calc(50% - 32px);background:#ffffffb3;border:1px solid #e5e7eb;border-radius:14px;padding:12px 14px;backdrop-filter:saturate(120%);box-shadow:0 8px 20px rgba(15,23,42,.05);transition:box-shadow .15s,border-color .15s}
         .cardL{margin-right:auto;padding-right:20px}
         .cardR{margin-left:auto;padding-left:20px}
         .cardFocus{border-color:#FACC15;box-shadow:0 0 0 2px rgba(250,204,21,.35) inset, 0 0 0 2px rgba(250,204,21,.15)}
-        .cardTop{display:flex;align-items:center;justify-content:space-between;gap:10px}
         .ttl{display:flex;align-items:center;gap:8px;margin:0;font-weight:700;font-size:16px}
-        .idx{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:999px;border:1px solid #d1d5db;font-size:11px;color:#64748b}
+        .idx{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;border:1px solid #d1d5db;background:#fff;font-size:12px;color:#334155;line-height:1;padding:0}
         .loc{color:#9aa4b2}
         .badge{font-size:11px;border:1px solid #e5e7eb;border-radius:999px;padding:2px 8px}
         .sub{margin-top:6px;color:#6b7280;font-weight:600}
 
-        /* Extra transshipment compact box */
         .extraBox{margin-top:10px;border:1px solid #e5e7eb;background:#fafbff;border-radius:10px;padding:8px 10px;display:flex;flex-direction:column;gap:6px}
         .extraRow{display:grid;grid-template-columns:auto auto 12px 1fr;align-items:center;gap:8px;font-weight:600;color:#0f172a}
         .extraStatus{padding:2px 8px;border:1px solid #e5e7eb;border-radius:999px;font-size:12px;background:#ffffff}
@@ -833,7 +858,6 @@ export default function ShipmentClient({ id }: { id: string }) {
         .extraDash{color:#9ca3af}
         .extraLabel{font-size:12px;color:#334155;font-weight:600;line-height:1.25}
 
-        /* Notes inside card */
         .notesBox{margin-top:10px;border:1px solid #e5e7eb;border-radius:10px;background:#fafafa;padding:10px}
         .notesT{font-size:12px;font-weight:700;color:#6b7280;margin-bottom:6px}
         .nList{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
@@ -846,7 +870,6 @@ export default function ShipmentClient({ id }: { id: string }) {
         .showBtn{padding:8px 14px;border-radius:999px;border:1px solid #e5e7eb;background:#fff}
         .showBtn:hover{box-shadow:0 2px 8px rgba(0,0,0,.06)}
 
-        /* Tables */
         .secWrap{margin-top:16px}
         .secHeading{margin:0 0 10px 0;font-size:14px;letter-spacing:.08em;color:#64748b;font-weight:800;text-transform:uppercase}
         .premiumTable{border:1px solid #e6eaf2;border-radius:16px;overflow:hidden;background:#fff;box-shadow:0 10px 28px rgba(15,23,42,.05)}
@@ -856,13 +879,7 @@ export default function ShipmentClient({ id }: { id: string }) {
         .premiumTable .tRow + .tRow{border-top:1px solid #eef2f7}
         .premiumTable .tRow:hover{background:#f9fbff}
         .muted{color:#64748b;margin:6px 0 0 2px}
-        @media (max-width:680px){
-          .card{width:100%}
-          .premiumTable.sea .tHead,.premiumTable.sea .tRow{grid-template-columns:48px 1fr 120px 1fr 110px}
-          .premiumTable.air .tHead,.premiumTable.air .tRow{grid-template-columns:48px 1fr 120px 90px 120px 140px}
-        }
 
-        /* Notes tổng hợp */
         .notesCard{margin-top:16px;border-radius:16px;border:1px solid #e6eaf2;background:linear-gradient(180deg,#fff,#fafbff);box-shadow:0 10px 28px rgba(15, 23, 42,.06);padding:14px 16px}
         .noteList{margin:0;padding-left:0;list-style:none}
         .noteItem{display:grid;grid-template-columns:14px 1fr;gap:10px;align-items:start;padding:10px 4px;border-radius:10px}
@@ -911,21 +928,18 @@ function NotesBox({
       <ul className="nList">
         {notes.map((n) => {
           const tsFmt = getNoteTimeText(n, 16);
-          const keyNorm = getStepFromNote(n) || stepId;
-          const noteLabel = stepsMap[keyNorm] ?? keyNorm.toUpperCase();
           const type = getNoteType(n);
           const noteText = getNoteContent(n);
           return (
-            <li key={n.id} className="nItem">
+            <li key={(n as any).id} className="nItem">
               <span className="nDot" />
               <div>
                 <div className="nMeta">
                   {type ? icon(type) : ""} {noteText}
+                  {type ? <span className="nType"> • {type}</span> : null}
                 </div>
                 <div className="nMeta" style={{ fontWeight: 500 }}>
                   {tsFmt}
-                  {noteLabel ? ` • ${noteLabel}` : ""}
-                  {type ? ` • ${type}` : ""}
                 </div>
               </div>
             </li>
@@ -947,13 +961,11 @@ function getLatestMilestoneStatus(
   extras: MilestoneLite[]
 ): { status: string | null; date: string | null } | null {
   const all = [...ordered, ...extras].filter(
-    (x): x is MilestoneLite & { date: string } =>
-      typeof x.date === "string" && !Number.isNaN(Date.parse(x.date))
+    (x): x is MilestoneLite & { date: string } => typeof x.date === "string" && !Number.isNaN(Date.parse(x.date))
   );
 
   if (all.length === 0) return null;
   all.sort((a, b) => Date.parse(b.date) - Date.parse(a.date));
-  // phần tử đầu tiên chắc chắn tồn tại sau check length
   const first = all[0]!;
   return { status: first.status ?? null, date: first.date ?? null };
 }
