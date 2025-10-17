@@ -751,16 +751,17 @@ export default function Page() {
           animation: spin 1.6s linear infinite;
           filter: drop-shadow(0 6px 14px rgba(59,130,246,0.35));
         }
-        .dot {
-          position: absolute;
-          width: 8px;
-          height: 8px;
+        .ring {
+          width: 56px;
+          height: 56px;
+          margin: 2px auto 12px;
           border-radius: 50%;
-          background: #3b82f6;
-          top: -2px;
-          left: 50%;
-          transform: translateX(-50%);
-          box-shadow: 0 0 10px rgba(59,130,246,0.6);
+          border: 4px solid #e5e7eb;     /* track nhạt */
+          border-top-color: #3b82f6;      /* màu quay */
+          animation: spin .8s linear infinite;
+          box-shadow: 0 6px 14px rgba(59,130,246,0.20);
+          background: none;               /* quan trọng: bỏ gradient */
+          mask: none;                     /* quan trọng: bỏ mask */
         }
         @keyframes spin { to { transform: rotate(360deg); } }
 
