@@ -824,7 +824,9 @@ export default function ShipmentClient({ id }: Props) {
         .chips{display:flex;gap:8px;overflow-x:auto;padding-top:6px;padding-bottom:2px}
         .chip{white-space:nowrap;border-radius:999px;padding:4px 8px;font-size:11px;border:1px solid;transition:all .15s ease;cursor:pointer}
         .chipDone{background:#eafff2;border-color:#a7f3d0;color:#065f46}
+        .chipDone:hover{background:#16a34a;border-color:#15803d;color:#fff;box-shadow:0 0 0 2px rgba(22,163,74,.25)}
         .chipCurrent{background:#fff7ed;border-color:#fdba74;color:#9a3412;box-shadow:0 0 0 2px #fed7aa}
+        .chipCurrent:hover{background:#fb923c;border-color:#f97316;color:#fff;box-shadow:0 0 0 2px rgba(251,146,60,.30)}
         .chipTodo{background:#f6f7fb;border-color:#e5e7eb;color:#667085}
         .chipTodo:hover{background:#cbd5e1;border-color:#94a3b8;color:#111827}
 
