@@ -716,6 +716,8 @@ export default function ShipmentClient({ id }: Props) {
                 <div>Size/Type</div>
                 <div>Vessel</div>
                 <div>Voyage</div>
+                <div>Weight (kgs)</div>
+                <div>Volume (cbm)</div>
               </div>
               {data.input_sea.map((c: InputSea, idx: number) => (
                 <div className="tRow" key={c.container_number ?? String(idx)}>
@@ -724,6 +726,8 @@ export default function ShipmentClient({ id }: Props) {
                   <div>{c.size_type ?? "—"}</div>
                   <div>{c.vessel ?? "—"}</div>
                   <div>{c.voyage ?? "—"}</div>
+                  <div>{c.weight_kg ?? "—"}</div>
+                  <div>{c.volume_cbm ?? "—"}</div>
                 </div>
               ))}
             </div>
@@ -875,7 +879,8 @@ export default function ShipmentClient({ id }: Props) {
         .secHeading{margin:0 0 10px 0;font-size:14px;letter-spacing:.08em;color:#64748b;font-weight:800;text-transform:uppercase}
         .premiumTable{border:1px solid #e6eaf2;border-radius:16px;overflow:hidden;background:#fff;box-shadow:0 10px 28px rgba(15,23,42,.05)}
         .premiumTable .tHead{background:linear-gradient(180deg,#f7f9fc,#f2f5fb);color:#334155;font-weight:800;font-size:13px;border-bottom:1px solid #e9edf5}
-        .premiumTable.sea .tHead,.premiumTable.sea .tRow{display:grid;grid-template-columns:64px 1.2fr 160px 1.4fr 140px;gap:16px;align-items:center;padding:12px 16px}
+        .premiumTable.sea .tHead,.premiumTable.sea .tRow{display:grid;grid-template-columns:64px 1.25fr 120px 1.35fr 120px 140px 140px;gap:16px;align-items:center;padding:12px 16px}
+        .premiumTable.sea .tHead,.premiumTable.sea .tRow{place-items: center;text-align: center}
         .premiumTable.air .tHead,.premiumTable.air .tRow{display:grid;grid-template-columns:64px 1.4fr 150px 120px 160px 200px;gap:16px;align-items:center;padding:12px 16px}
         .premiumTable .tRow + .tRow{border-top:1px solid #eef2f7}
         .premiumTable .tRow:hover{background:#f9fbff}
