@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type { CSSProperties } from "react";
+type CSSVars = CSSProperties & Record<"--railVis", string>;
 import { supabaseClient } from "@/lib/supabaseClient";
 import type { Shipment, InputSea, InputAir, MilestoneAny, Note } from "@/types";
 import { useShipment } from "@/lib/useShipment";
@@ -622,7 +624,7 @@ export default function ShipmentClient({ id }: Props) {
         <div className="vWrap" ref={vWrapRef}>
           <div
           className={`rail ${railFill > 0 ? "railClip" : ""}`}
-          style={{ ["--railVis" as any]: `${railFill}px` }}/>
+          style={{ "--railVis": `${railFill}px` } as CSSVars}/>
           <div className="railFill" style={{ height: railFill }} />
           <ul className="vList">
             {visibleSteps.map((d, idx) => {
