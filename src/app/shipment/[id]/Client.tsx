@@ -620,7 +620,9 @@ export default function ShipmentClient({ id }: Props) {
 
         {/* Vertical timeline */}
         <div className="vWrap" ref={vWrapRef}>
-          <div className="rail" />
+          <div
+          className={`rail ${railFill > 0 ? "railClip" : ""}`}
+          style={{ ["--railVis" as any]: `${railFill}px` }}/>
           <div className="railFill" style={{ height: railFill }} />
           <ul className="vList">
             {visibleSteps.map((d, idx) => {
@@ -819,6 +821,7 @@ export default function ShipmentClient({ id }: Props) {
         .vWrap{position:relative;background:#fff;border-radius:18px;box-shadow:0 8px 20px rgba(15,23,42,.06);padding:20px;margin-top:10px}
         .rail{position:absolute;left:50%;top:28px;bottom:150px;transform:translateX(-50%);border-left:2px dashed #d1d5db;pointer-events:none;z-index:0}
         .railFill{position:absolute;left:50%;top:28px;transform:translateX(-50%);border-left:2px solid #10b981;height:0;z-index:1;transition:height .25s ease}
+        .railClip{clip-path: inset(0 0 calc(100% - var(--railVis, 0px)) 0)}
         .vList{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:18px}
         .vItem{position:relative;padding-top:8px}
         .node{position:absolute;left:50%;top:8px;transform:translateX(-50%);width:28px;height:28px;border-radius:50%;display:grid;place-items:center;border:2px solid;z-index:2}
