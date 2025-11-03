@@ -19,7 +19,7 @@ const SEA_STEPS: Record<string, string> = {
   step1: "Pickup at Shipper",
   step2: "Received at Origin Warehouse / CY",
   step3: "Export Customs Clearance",
-  step4: "Port of Receipt (if different)",
+  step4: "Place of Receipt (if different)",
   step5: "Port of Loading (POL)",
   step6: "Transshipment Port(s)",
   step7: "Port of Discharge (POD)",
@@ -65,7 +65,6 @@ function normalizeStepKey(raw: string | number | null | undefined): string {
   return s;
 }
 
-/** Truy cập trường động an toàn từ object */
 function readString(obj: unknown, key: string): string | null {
   if (!obj || typeof obj !== "object") return null;
   const rec = obj as Record<string, unknown>;
@@ -194,31 +193,27 @@ function splitRemarksToBullets(raw?: string | null): string[] {
   const s = (raw ?? "").trim();
   if (!s) return [];
   return s
-    .split(/[;\n]+/g) // tách theo ; hoặc xuống dòng
+    .split(/[;\n]+/g)
     .map((x) => x.trim())
     .filter(Boolean)
-    .map((x) => (x ? x.charAt(0).toUpperCase() + x.slice(1) : x)); // Viết hoa chữ cái đầu
+    .map((x) => (x ? x.charAt(0).toUpperCase() + x.slice(1) : x));
 }
 
 /* ================= MAIN ================= */
 type Props = { id: string };
 export default function ShipmentClient({ id }: Props) {
-  // Lấy dữ liệu qua hook (đã có cache + refetch nền)
   const { data: hData, loading, refetch } = useShipment(id);
   const data = (hData as Detail | null) ?? null;
 
-  // ---- Hooks luôn chạy (trước mọi early-return) ----
   const liRefs = useRef<Record<string, HTMLLIElement | null>>({});
   const [highlight, setHighlight] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
   const stickyRef = useRef<HTMLDivElement | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // === Phần đường xanh lá trên rail ===
   const vWrapRef = useRef<HTMLDivElement | null>(null);
   const [railFill, setRailFill] = useState(0);
 
-  // Realtime debounce
   useEffect(() => {
     const channel = supabaseClient.channel(`ship-${id}`);
     const tables = [
@@ -254,7 +249,6 @@ export default function ShipmentClient({ id }: Props) {
     };
   }, [id, refetch]);
 
-  // === TÍNH CHIỀU CAO ĐƯỜNG XANH (đọc DOM) ===
   useEffect(() => {
     const calc = () => {
       const wrap = vWrapRef.current;
@@ -304,11 +298,9 @@ export default function ShipmentClient({ id }: Props) {
 
   const notesByStep = useMemo(() => groupNotesByStep(data?.notes ?? []), [data?.notes]);
 
-  /* ===== NEW: Remarks (useMemo đặt TRƯỚC early return) ===== */
   const remarksRaw = readString(data?.shipment ?? null, "remarks") ?? "";
   const remarksItems = useMemo(() => splitRemarksToBullets(remarksRaw), [remarksRaw]);
 
-  /* ========= Loading ========= */
   if (loading || !data) {
     return (
       <main style={{ padding: 24, maxWidth: 980, margin: "0 auto" }}>
@@ -356,7 +348,6 @@ export default function ShipmentClient({ id }: Props) {
   const { ordered, extras } = groupMilestones(data.milestones);
   const s: Shipment = data.shipment;
 
-  // ===== Progress state =====
   const isDoneBase = (o: { status?: string | null; date?: string | null }) => {
     const st = (o.status || "").toLowerCase();
     return !!o.date || st.includes("done") || st.includes("complete");
@@ -403,7 +394,6 @@ export default function ShipmentClient({ id }: Props) {
   const tsHas = s.transshipment_ports !== undefined && s.transshipment_ports !== null;
   const tsDisplay = tsHas ? String(s.transshipment_ports || "").trim() || "Yes" : "No";
 
-  /* ====== Build display list ====== */
   type ExtraChild = { label: string; date?: string | null; status?: string | null };
   type DispStep = {
     id: string;
@@ -421,9 +411,7 @@ export default function ShipmentClient({ id }: Props) {
 
   function mkStatusText(st?: string | null, dt?: string | null) {
     const raw = (st ?? "").trim();
-    if (raw) {
-      return `${raw}${dt ? ` (${formatYMD(dt)})` : ""}`;
-    }
+    if (raw) return `${raw}${dt ? ` (${formatYMD(dt)})` : ""}`;
     if (dt) return `Done (${formatYMD(dt)})`;
     return "N/A";
   }
@@ -440,9 +428,7 @@ export default function ShipmentClient({ id }: Props) {
   const childrenForTransit: ExtraChild[] | undefined =
     extras.length > 0
       ? extras.map((ex) => ({
-          label:
-            (data.shipment.mode === "SEA" ? EXTRA_STEPS_SEA[ex.key] : EXTRA_STEPS_AIR[ex.key]) ||
-            "(Optional) Extra Transshipment",
+          label: (data.shipment.mode === "SEA" ? EXTRA_STEPS_SEA[ex.key] : EXTRA_STEPS_AIR[ex.key]) || "(Optional) Extra Transshipment",
           date: ex.date ?? null,
           status: ex.status ?? null,
         }))
@@ -469,7 +455,6 @@ export default function ShipmentClient({ id }: Props) {
     };
   });
 
-  /* ===== Scroll / Highlight ===== */
   const visibleSteps = showAll
     ? dispSteps
     : dispSteps.filter(
@@ -515,7 +500,6 @@ export default function ShipmentClient({ id }: Props) {
           Shipment {s.shipment_id} — {s.mode}
         </h1>
 
-        {/* chỉ Copy link */}
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <button
             onClick={async () => {
@@ -602,7 +586,6 @@ export default function ShipmentClient({ id }: Props) {
       {/* ===== OVERALL PROGRESS ===== */}
       <section className="hybCard">
         <h3 className="secTitle">OVERALL PROGRESS</h3>
-        {/* Sticky mini-bar */}
         <div className="stickyWrap" ref={stickyRef}>
           <div className="miniBar">
             <div className="miniTop">
@@ -758,7 +741,6 @@ export default function ShipmentClient({ id }: Props) {
         )}
       </section>
 
-      {/* ===== Notes tổng hợp ===== */}
       <section className="notesCard">
         <h3 className="secTitle">NOTES</h3>
         {data.notes.length === 0 ? (
@@ -863,13 +845,7 @@ export default function ShipmentClient({ id }: Props) {
         .extraDash{color:#9ca3af}
         .extraLabel{font-size:12px;color:#334155;font-weight:600;line-height:1.25}
 
-        .notesBox{margin-top:10px;border:1px solid #e5e7eb;border-radius:10px;background:#fafafa;padding:10px}
-        .notesT{font-size:12px;font-weight:700;color:#6b7280;margin-bottom:6px}
-        .nList{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
-        .nItem{display:grid;grid-template-columns:10px 1fr;gap:8px;align-items:flex-start}
-        .nDot{width:6px;height:6px;border-radius:999px;background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.15);margin-top:6px}
-        .nMeta{font-size:11px;color:#6b7280;font-weight:700}
-        .nTxt{margin-top:2px}
+        /* (Giữ nguyên các style khác; style riêng của NotesBox đã đặt trong NotesBox) */
 
         .showMore{display:flex;justify-content:center;margin-top:10px}
         .showBtn{padding:8px 14px;border-radius:999px;border:1px solid #e5e7eb;background:#fff}
@@ -910,6 +886,7 @@ function KVT({ k, v }: { k: string; v?: ReactNode }) {
   );
 }
 
+/* ================= NotesBox (with local styled-jsx) ================= */
 function NotesBox({
   notes,
   stepId: _stepId,
@@ -921,40 +898,71 @@ function NotesBox({
 }) {
   void _stepId;
   void _stepsMap;
-  if (!notes || notes.length === 0) {
-    return (
-      <div className="notesBox">
-        <div className="notesT">Milestone Notes</div>
-        <div style={{ color: "#9aa4b2" }}>—</div>
-      </div>
-    );
-  }
 
   return (
     <div className="notesBox">
-      <div className="notesT">Milestone Notes</div>
-      <ul className="nList">
-        {notes.map((n) => {
-          const tsFmt = getNoteTimeText(n, 16);
-          const type = getNoteType(n);
-          const noteText = getNoteContent(n);
-          const keyId = getNoteId(n, `${tsFmt}-${noteText}`);
-          return (
-            <li key={keyId} className="nItem">
-              <span className="nDot" />
-              <div>
-                <div className="nMeta">
-                  {type ? icon(type) : ""} {noteText}
-                  {type ? <span className="nType"> • {type}</span> : null}
+      {/* Header Variant B */}
+      <div className="notesHeadB">
+        <span className="notesTB">MILESTONE NOTES</span>
+        <span className="notesCountB">
+          {notes?.length ?? 0} {notes && notes.length === 1 ? "note" : "notes"}
+        </span>
+      </div>
+
+      {!notes || notes.length === 0 ? (
+        <div style={{ color: "#9aa4b2" }}>—</div>
+      ) : (
+        <ul className="nList">
+          {notes.map((n) => {
+            const tsFmt = getNoteTimeText(n, 16);
+            const type = getNoteType(n);
+            const noteText = getNoteContent(n);
+            const keyId = getNoteId(n, `${tsFmt}-${noteText}`);
+            return (
+              <li key={keyId} className="nItem">
+                <span className="nDot" />
+                <div>
+                  <div className="nMeta oneLine">
+                    {type ? icon(type) : ""} {noteText}
+                    {type ? <span className="nType"> • {type}</span> : null} <span className="nDate">({tsFmt})</span>
+                  </div>
                 </div>
-                <div className="nMeta" style={{ fontWeight: 500 }}>
-                  {tsFmt}
-                </div>
-              </div>
-            </li>
-          );
-        })}
-      </ul>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {/* 🔽 Stylescope RIÊNG CHO NotesBox để tránh lỗi styled-jsx scope */}
+      <style jsx>{`
+        .notesBox{margin-top:10px;border:1px solid #e5e7eb;border-radius:12px;background:#fafafa;padding:10px}
+
+        .notesHeadB{
+          position:relative;display:flex;align-items:center;justify-content:space-between;
+          padding:8px 10px;border-radius:12px;border:1px solid #e6eaf2;
+          background:linear-gradient(180deg,#ffffff 0%,#f7fdf9 100%);
+          box-shadow:0 1px 0 #fff inset, 0 6px 18px rgba(16,185,129,.06);
+          margin-bottom:8px;
+        }
+        .notesHeadB::before{
+          content:"";position:absolute;left:0;top:0;bottom:0;width:6px;
+          border-top-left-radius:12px;border-bottom-left-radius:12px;
+          background:linear-gradient(180deg,#10b981,#22c55e);
+        }
+        .notesTB{font-size:12px;font-weight:900;letter-spacing:.08em;color:#0f172a;padding-left:6px}
+        .notesCountB{
+          font-size:11px;font-weight:800;color:#065f46;padding:2px 8px;border-radius:999px;
+          background:#ecfdf5;border:1px solid #a7f3d0;box-shadow:0 0 0 2px rgba(16,185,129,.08) inset;
+        }
+
+        .nList{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+        .nItem{display:grid;grid-template-columns:10px 1fr;gap:8px;align-items:flex-start}
+        .nDot{width:6px;height:6px;border-radius:999px;background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.15);margin-top:6px}
+        .nMeta{font-size:11px;color:#6b7280;font-weight:700}
+        .oneLine{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .nType{margin-right:6px}
+        .nDate{margin-left:6px}
+      `}</style>
     </div>
   );
 }
@@ -972,7 +980,6 @@ function getLatestMilestoneStatus(
   const all = [...ordered, ...extras].filter(
     (x): x is MilestoneLite & { date: string } => typeof x.date === "string" && !Number.isNaN(Date.parse(x.date))
   );
-
   if (all.length === 0) return null;
   all.sort((a, b) => Date.parse(b.date) - Date.parse(a.date));
   const first = all[0]!;
