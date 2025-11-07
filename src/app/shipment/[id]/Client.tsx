@@ -556,6 +556,8 @@ export default function ShipmentClient({ id }: Props) {
             <KVT k="Transit" v={tsDisplay} />
             <div className="line" />
             <KVT k="POD/AOD" v={s.pod_aod ?? "—"} />
+             <div className="line" />
+             <KVT k="Place of Delivery" v={s.place_of_delivery ?? "—"} />
             <div className="line" />
             <div style={{ fontSize: 13 }}>
               <div style={{ color: "#64748b" }}>Route</div>

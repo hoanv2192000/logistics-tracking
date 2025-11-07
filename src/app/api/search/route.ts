@@ -21,6 +21,7 @@ type SearchRow = {
   ata_date: string | null;
   pol_aol: string | null;
   pod_aod: string | null;
+  place_of_delivery: string | null;
 };
 
 export async function GET(req: Request) {
@@ -62,7 +63,8 @@ export async function GET(req: Request) {
     eta_date,
     ata_date,
     pol_aol,
-    pod_aod
+    pod_aod,
+    place_of_delivery
   `;
 
   try {

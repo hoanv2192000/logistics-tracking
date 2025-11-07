@@ -28,7 +28,6 @@ function Highlight({ text, q }: { text?: string | null; q: string }) {
   );
 }
 
-// an toàn hơn any
 const fmt = (v: unknown) => (v === null || v === undefined || v === "" ? "—" : String(v));
 
 type SortBy = "ETD" | "ETA";
@@ -39,16 +38,17 @@ export default function Page() {
   const [q, setQ] = useState<string>("");
   const [pol, setPol] = useState<string>("ALL");
   const [pod, setPod] = useState<string>("ALL");
+  const [por, setPor] = useState<string>("ALL"); // Place of Delivery
   const [sortBy, setSortBy] = useState<SortBy>("ETD");
   const [dir, setDir] = useState<Dir>("DESC");
   const [rows, setRows] = useState<SearchRow[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [touched, setTouched] = useState<boolean>(false);
+  const [selId, setSelId] = useState<string | number | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
   const canSearch = useMemo(() => q.trim().length >= 2, [q]);
 
-  // unique (case-insensitive) cho POL/POD
   function uniqueCaseInsensitive(values: string[]) {
     const seen = new Set<string>();
     const out: string[] = [];
@@ -76,11 +76,19 @@ export default function Page() {
     return uniqueCaseInsensitive(list);
   }, [rows]);
 
+  const porOptions = useMemo(() => {
+    const list = rows
+      .map((r) => String((r as Record<string, unknown>)["place_of_delivery"] ?? "").trim())
+      .filter(Boolean);
+    return uniqueCaseInsensitive(list);
+  }, [rows]);
+
   function buildKey() {
     return JSON.stringify({
       q: q.trim(),
       pol: pol.trim() === "" ? "ALL" : pol,
       pod: pod.trim() === "" ? "ALL" : pod,
+      por: por.trim() === "" ? "ALL" : por,
       sortBy,
       dir,
     });
@@ -91,13 +99,11 @@ export default function Page() {
       setRows([]);
       return;
     }
-    const key = buildKey();
+    const cacheKey = buildKey();
 
-    const cached = lruSearchGet<SearchRow[]>(key);
+    const cached = lruSearchGet<SearchRow[]>(cacheKey);
     if (cached) {
       setRows(cached);
-      // [CHANGED] không return nữa — tiếp tục refetch nền để làm tươi
-      // return;
     }
 
     if (abortRef.current) abortRef.current.abort();
@@ -110,21 +116,30 @@ export default function Page() {
         q: q.trim(),
         pol: pol.trim() === "" ? "ALL" : pol,
         pod: pod.trim() === "" ? "ALL" : pod,
+        por: por.trim() === "" ? "ALL" : por,
         sortBy,
         dir,
       });
-      // [CHANGED] thêm cache-buster để tránh cache; bỏ option cache để không lỗi TS
       params.set("_t", String(Date.now()));
 
       const res = await fetch(`/api/search?${params.toString()}`, {
-        signal: ac.signal, // [CHANGED] chỉ truyền signal
+        signal: ac.signal,
       } as RequestInit);
-      const json: { ok: boolean; data?: SearchRow[] } = await res.json();
-      const data = (json.data || []) as SearchRow[];
+      let data = ((await res.json()) as { ok: boolean; data?: SearchRow[] }).data || [];
+
+      // fallback lọc POR ở client nếu API chưa support
+      if (por.trim() !== "" && por !== "ALL") {
+        const k = por.trim().toLowerCase();
+        data = data.filter((r) =>
+          String((r as Record<string, unknown>)["place_of_delivery"] ?? "")
+            .trim()
+            .toLowerCase() === k
+        );
+      }
+
       setRows(data);
-      lruSearchSet(key, data);
+      lruSearchSet(cacheKey, data);
     } catch (e: unknown) {
-      // chỉ log nếu không phải AbortError
       if (!(e && typeof e === "object" && (e as { name?: string }).name === "AbortError")) {
         console.error("search error:", e);
       }
@@ -139,9 +154,8 @@ export default function Page() {
     const t = setTimeout(() => void doSearch(), 300);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, pol, pod, sortBy, dir, touched, canSearch]);
+  }, [q, pol, pod, por, sortBy, dir, touched, canSearch]);
 
-  // Esc để huỷ khi đang loading
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape" && loading) {
@@ -154,7 +168,6 @@ export default function Page() {
     return () => window.removeEventListener("keydown", onKey);
   }, [loading]);
 
-  // [CHANGED] đảm bảo huỷ request nếu rời trang/unmount
   useEffect(() => {
     return () => {
       if (abortRef.current) abortRef.current.abort();
@@ -166,23 +179,27 @@ export default function Page() {
     setQ("");
     setPol("ALL");
     setPod("ALL");
+    setPor("ALL");
     setSortBy("ETD");
     setDir("DESC");
     setTouched(false);
     setRows([]);
+    setSelId(null);
     if (abortRef.current) {
       abortRef.current.abort();
       abortRef.current = null;
     }
   }
 
+  const count = rows.length;
+
   return (
     <main className="page">
       {/* Header */}
       <div className="header-row">
         <h1 className="title">End-to-End Visibility & Real-Time Tracking</h1>
-        <div className="total">
-          Total: <b>{rows.length}</b>
+        <div className={`total ${count > 0 ? "total--ok" : ""}`}>
+          Total: <b>{count}</b>
         </div>
       </div>
 
@@ -216,7 +233,7 @@ export default function Page() {
           </div>
 
           <div className="field">
-            <label>POL</label>
+            <label>POL/AOL</label>
             <select
               value={pol}
               onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -234,7 +251,7 @@ export default function Page() {
           </div>
 
           <div className="field">
-            <label>POD</label>
+            <label>POD/AOD</label>
             <select
               value={pod}
               onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -252,9 +269,10 @@ export default function Page() {
           </div>
         </div>
 
-        {/* Actions */}
-        <div className="row row-bottom">
-          <div className="actions">
+        {/* Hàng POR + Actions cùng dòng */}
+        <div className="row row-por">
+          {/* Actions (cột 1) */}
+          <div className="actions actions-inline">
             <select
               value={sortBy}
               onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -280,25 +298,52 @@ export default function Page() {
               Clear
             </button>
           </div>
-          <div aria-hidden />
+
+          {/* Place of Delivery (cột 2) */}
+          <div className="field">
+            <label>Place of Delivery</label>
+            <select
+              value={por}
+              onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
+                setPor(e.target.value);
+                setTouched(true);
+              }}
+            >
+              <option value="ALL">ALL</option>
+              {porOptions.map((v, i) => (
+                <option key={`${v}-${i}`} value={v}>
+                  {v}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* cột 3 trống để cân lưới */}
           <div aria-hidden />
         </div>
       </section>
 
-      {/* Results */}
+      {/* Results + Empty state */}
       {touched && canSearch && (
         <>
           {!loading && rows.length === 0 ? (
-            // ===== Empty (Trắng tinh khiết – CTA rõ ràng)
             <section className="empty-wrap">
               <div className="empty-card">
                 <h3>No matching records found.</h3>
                 <p className="empty-sub">
-                  💡Tip: Please verify the spelling or provide a more precise 
-                  <b>Tracking ID</b>, <b>MBL number</b>, <b>HBL number</b>, or <b>Container number</b> for better accuracy.
+                  <span className="bulb" aria-hidden>
+                    💡
+                  </span>
+                  <span className="tip">
+                    Tip:&nbsp;Please verify the spelling or provide a more precise&nbsp;
+                    <b>Tracking ID</b>, <b>MBL number</b>, <b>HBL number</b>, or <b>Container number</b> for better
+                    accuracy.
+                  </span>
                 </p>
                 <div className="empty-actions">
-                  <button className="btn-cta" onClick={clearAll}>Clear filters</button>
+                  <button className="btn-cta" onClick={clearAll}>
+                    Clear filters
+                  </button>
                 </div>
               </div>
             </section>
@@ -315,6 +360,7 @@ export default function Page() {
                     <div className="td">HBL</div>
                     <div className="td">POL/AOL</div>
                     <div className="td">POD/AOD</div>
+                    <div className="td">Place of Delivery</div>
                     <div className="td">ETD</div>
                     <div className="td">ATD</div>
                     <div className="td">ETA</div>
@@ -328,14 +374,20 @@ export default function Page() {
                     return (
                       <div className="tr" key={idx}>
                         <div className="td td-actions td-sticky">
-                          {/* Nút Premium */}
                           <Link
                             href={`/shipment/${x.shipment_id || ""}`}
                             className="btn-premium"
                             title="View details"
                             aria-label="View details"
-                            onMouseEnter={() => x.shipment_id && prefetchShipment(String(x.shipment_id))}  // ← thêm
-                            onFocus={() => x.shipment_id && prefetchShipment(String(x.shipment_id))}
+                            data-active={
+                              selId != null && String(x.shipment_id ?? "") === String(selId) ? "true" : undefined
+                            }
+                            onMouseEnter={() => x.shipment_id && prefetchShipment(String(x.shipment_id))}
+                            onMouseDown={() => setSelId(x.shipment_id ?? null)}
+                            onFocus={() => x.shipment_id && setSelId(x.shipment_id)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") setSelId(x.shipment_id ?? null);
+                            }}
                           >
                             <svg
                               className="btn-premium-ico"
@@ -376,6 +428,7 @@ export default function Page() {
                         </div>
                         <div className="td">{fmt(sx["pol_aol"])}</div>
                         <div className="td">{fmt(sx["pod_aod"])}</div>
+                        <div className="td">{fmt(sx["place_of_delivery"])}</div>
                         <div className="td">{fmt(sx["etd_date"])}</div>
                         <div className="td">{fmt(sx["atd_date"])}</div>
                         <div className="td">{fmt(sx["eta_date"])}</div>
@@ -390,7 +443,7 @@ export default function Page() {
         </>
       )}
 
-      {/* ===== Loading Overlay (Style A – Glassmorphism + Soft Motion) */}
+      {/* Loading Overlay */}
       {loading && (
         <div className="overlay" role="status" aria-live="polite" aria-label="Searching">
           <div className="glass">
@@ -416,6 +469,13 @@ export default function Page() {
 
       {/* Styles */}
       <style jsx>{`
+        /* ==== BRAND TOKENS ==== */
+        :global(:root) {
+          --brand: #0ea5e9;
+          --brand-bg: #eff8ff;
+          --brand-border: #b9e0f7;
+        }
+
         :root {
           --bg: #f4f6fb;
           --card: #fff;
@@ -423,363 +483,185 @@ export default function Page() {
           --muted: #475569;
           --border: #cdd6e1;
           --ring: #2563eb33;
+          --col-gap: 12px;
+          --sep-half: calc(var(--col-gap) / 2);
+          --code-min: 12ch;
+
+          --ok-bg: #ecfdf5;
+          --ok-border: #86efac;
+          --ok-text: #065f46;
+          --ok-ring: rgba(16, 185, 129, 0.16);
+
+          --off-bg: #f1f5f9;
+          --off-border: #e2e8f0;
+          --off-text: #475569;
         }
 
-        .page {
-          min-height: 100vh;
-          background: var(--bg);
-          padding: 28px 16px 64px;
-        }
+        .page { min-height: 100vh; background: var(--bg); padding: 28px 16px 64px; }
         .header-row {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          max-width: 1200px;
-          margin: 0 auto 12px;
+          display: flex; align-items: center; justify-content: space-between;
+          max-width: 1200px; margin: 0 auto 12px;
         }
-        .title {
-          margin: 0;
-          font-size: 28px;
-          font-weight: 800;
-          color: #0f172a;
-        }
-        .total {
-          font-size: 12px;
-          color: #334155;
-          background: #eef2ff;
-          padding: 6px 10px;
-          border-radius: 999px;
-          border: 1px solid #dbeafe;
-          font-weight: 700;
-        }
+        .title { margin: 0; font-size: 28px; font-weight: 800; color: #0f172a; }
+        .total { font-weight: 800; padding: 6px 10px; border-radius: 999px; border: 1px solid #e5e7eb; background: #fff; }
+        .total--ok { background: #ecfdf5; border-color: #86efac; color: #065f46; }
 
         .filter-card {
-          max-width: 1200px;
-          margin: 0 auto;
-          background: linear-gradient(180deg, #ffffff, #f7f9fc);
-          border: 1px solid #e6eaf2;
-          border-radius: 16px;
-          padding: 16px;
+          max-width: 1200px; margin: 0 auto; background: linear-gradient(180deg, #ffffff, #f7f9fc);
+          border: 1px solid #e6eaf2; border-radius: 16px; padding: 16px;
           box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
         }
-        .row {
-          display: grid;
-          grid-template-columns: 1fr 300px 300px;
-          gap: 16px;
-        }
-        .row-top {
-          margin-bottom: 14px;
-        }
+        .row { display: grid; grid-template-columns: 1fr 300px 300px; gap: 16px; }
+        .row-top { margin-bottom: 14px; }
+        .row-por { margin: 6px 0 6px; align-items: end; } /* actions + POR */
 
-        .field {
-          display: flex;
-          flex-direction: column;
+        .field { display: flex; flex-direction: column; }
+        .field label { font-size: 12px; color: #6b7280; margin-bottom: 6px; font-weight: 700; letter-spacing: 0.06em; }
+        .field input, .field select {
+          height: 40px; border: 1.5px solid #9aa7b8; border-radius: 10px; background: #fff; color: #0f172a;
+          padding: 8px 12px; font-size: 14px; outline: none; width: 100%;
+          box-sizing: border-box; transition: box-shadow 0.15s, border-color 0.15s;
         }
-        .field label {
-          font-size: 12px;
-          color: #6b7280;
-          margin-bottom: 6px;
-          font-weight: 700;
-          letter-spacing: 0.06em;
-        }
-        .field input,
-        .field select {
-          height: 40px;
-          border: 1.5px solid #9aa7b8;
-          border-radius: 10px;
-          background: #fff;
-          color: #0f172a;
-          padding: 8px 12px;
-          font-size: 14px;
-          outline: none;
-          width: 100%;
-          box-sizing: border-box;
-          transition: box-shadow 0.15s, border-color 0.15s;
-        }
-        .field input:focus,
-        .field select:focus {
-          border-color: #64748b;
-          box-shadow: 0 0 0 3px var(--ring);
-        }
+        .field input:focus, .field select:focus { border-color: #64748b; box-shadow: 0 0 0 3px var(--ring); }
 
-        .search-wrap {
-          position: relative;
-        }
-        .icon {
-          position: absolute;
-          left: 12px;
-          top: 50%;
-          transform: translateY(-50%);
-          color: #6b7280;
-        }
-        .search-wrap input {
-          padding-left: 38px;
-        }
+        .search-wrap { position: relative; }
+        .icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #6b7280; }
+        .search-wrap input { padding-left: 38px; }
 
-        .actions {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-        }
-        .actions select {
-          width: 150px;
-          height: 38px;
-          border-radius: 8px;
-          border: 1.5px solid #9aa7b8;
-          background: #fff;
-        }
+        .actions { display: flex; align-items: center; gap: 10px; }
+        .actions-inline { justify-self: start; }
+        .actions select { width: 150px; height: 38px; border-radius: 8px; border: 1.5px solid #9aa7b8; background: #fff; }
         .btn {
-          height: 38px;
-          padding: 0 14px;
-          border-radius: 999px;
-          font-weight: 800;
-          font-size: 13px;
-          cursor: pointer;
-          border: 1.5px solid #1e293b;
-          transition: all 0.15s ease;
+          height: 38px; padding: 0 14px; border-radius: 999px; font-weight: 800; font-size: 13px; cursor: pointer;
+          border: 1.5px solid #1e293b; transition: all 0.15s ease;
         }
-        .btn.btn-outline {
-          background: #fff;
-          color: #0f172a;
-        }
-        .btn.btn-dark {
-          background: #0f172a;
-          color: #fff;
-          border-color: #0f172a;
-        }
+        .btn.btn-outline { background: #fff; color: #0f172a; }
+        .btn.btn-dark { background: #0f172a; color: #fff; border-color: #0f172a; }
 
         /* ===== Table ===== */
-        .table-wrap {
-          max-width: 1200px;
-          margin: 16px auto 0;
+        .table .tr:not(.th) .td:nth-child(4),
+        .table .tr:not(.th) .td:nth-child(5) {
+          min-width: 0; overflow: visible; text-overflow: clip; white-space: normal;
+          overflow-wrap: anywhere; word-break: break-word; line-height: 1.25; text-align: center;
         }
+        .table-wrap { max-width: 1200px; margin: 16px auto 0; }
         .table-scroll {
-          border: 1px solid #e6eaf2;
-          border-radius: 16px;
-          background: #fff;
-          overflow-x: auto;
-          position: relative;
+          border: 1px solid #e6eaf2; border-radius: 16px; background: #fff; overflow-x: auto; position: relative;
           box-shadow: 0 12px 28px rgba(15, 23, 42, 0.05);
         }
-        .table {
-          min-width: 1280px;
-          position: relative;
-        }
-        .tr {
+        .table { min-width: 1200px; position: relative; }
+        .table > .tr {
           display: grid;
-          grid-template-columns: 80px 90px 180px 160px 140px 120px 120px 110px 110px 110px 110px;
-          column-gap: 16px;
-          align-items: center;
-          padding: 12px 14px;
+          grid-template-columns:
+            90px 80px 160px minmax(12ch,1fr) minmax(12ch,1fr)
+            180px 180px 200px 110px 110px 110px 110px;
+          column-gap: var(--col-gap);
+          align-items: center; padding: 12px 14px;
         }
-        .tr.th {
-          position: sticky;
-          top: 0;
-          z-index: 2;
-          background: #fff;
-          border-bottom: 1px solid #e9edf5;
+        .table > .tr.th { position: sticky; top: 0; z-index: 8; background: #fff; border-bottom: 1px solid #e9edf5; }
+        .table > .tr.th .td {
+          font-weight: 800; color: #475569; font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; text-align: center;
         }
-        .tr.th .td {
-          font-weight: 800;
-          color: #475569;
-          font-size: 13px;
-          letter-spacing: 0.04em;
-          text-transform: uppercase;
-        }
-        .td {
-          font-size: 14px;
-          color: #0f172a;
-        }
-        .td-actions {
-          display: flex;
-          align-items: center;
-        }
-        .td-sticky {
-          position: sticky;
-          left: 0;
-          z-index: 3;
-          background: #fff;
-        }
-        .tr.th .td-sticky {
-          z-index: 4;
-          background: #fff;
-        }
+        .table .td { font-size: 14px; color: #0f172a; padding: 10px 12px; min-width: 0; }
+        .table .tr:not(.th) .td { text-align: center; }
+
+        /* sticky col */
+        .td-sticky { position: sticky; left: 0; z-index: 5; background: #fff; }
+        .table > .tr.th .td-sticky { z-index: 9; background: #fff; }
         .td-sticky::after {
-          content: "";
-          position: absolute;
-          top: 0;
-          right: -8px;
-          width: 8px;
-          height: 100%;
-          box-shadow: 6px 0 10px rgba(15, 23, 42, 0.06);
+          content: ""; position: absolute; top: 0; right: -8px; width: 8px; height: 100%;
+          box-shadow: 6px 0 10px rgba(15,23,42,.06); pointer-events: none; z-index: 4;
+        }
+        .td-sticky .btn-premium { position: relative; z-index: 7; }
+
+        .table > .tr .td { position: relative; }
+        .table > .tr:not(.th) .td + .td::before,
+        .table > .tr.th       .td + .td::before {
+          content: ""; position: absolute; left: calc(var(--sep-half) * -1); width: var(--col-gap);
+          top: 10%; bottom: 10%; background: linear-gradient(to bottom, transparent, rgba(15,23,42,.1) 50%, transparent);
           pointer-events: none;
         }
-        .table .tr + .tr {
-          border-top: 1px solid #eef2f7;
-        }
-        .table .tr:not(.th):hover {
-          background: #f9fbff;
-        }
+        .table > .tr + .tr { border-top: 1px solid #eef2f7; }
+        .table > .tr:not(.th):hover { background: #f9fbff; }
 
-        /* ===== Premium View button ===== */
+        /* ===== Premium View button — base ===== */
         .btn-premium {
-          --grad-a: #ffffff;
-          --grad-b: #f4f7ff;
-          --stroke: rgba(15, 23, 42, 0.18);
-          --glow: rgba(59, 130, 246, 0.35);
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-          height: 30px;
-          padding: 0 12px;
-          border-radius: 999px;
-          background: linear-gradient(180deg, var(--grad-a), var(--grad-b));
-          border: 1px solid var(--stroke);
-          color: #0f172a;
-          text-decoration: none;
-          font-weight: 800;
-          letter-spacing: 0.02em;
-          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 8px 20px rgba(15, 23, 42, 0.08);
-          transition: transform 0.12s ease, box-shadow 0.18s ease, border-color 0.18s ease;
-          backdrop-filter: blur(6px);
-          -webkit-backdrop-filter: blur(6px);
+          --h: 36px;
+          display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+          height: var(--h); padding: 0 16px; border-radius: 999px;
+          font-weight: 900; font-size: 14px; letter-spacing: 0.01em;
+          color: #334155; background: #ffffff; border: 1.5px solid #e6eaf2;
+          box-shadow: inset 0 -1px 0 rgba(255,255,255,.85), 0 1px 2px rgba(16,24,40,.06);
+          position: relative; z-index: 7; pointer-events: auto;
+          -webkit-tap-highlight-color: transparent;
+          transition: color .18s ease, transform .12s ease, background .18s ease, border-color .18s ease;
         }
-        .btn-premium-ico {
-          filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.7));
-        }
-        .btn-premium:hover {
+        .btn-premium:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(14,165,233,.16); }
+        .btn-premium:active { transform: translateY(0); }
+        .btn-premium .btn-premium-ico { stroke: currentColor; transition: transform .18s ease, opacity .18s ease; opacity: .95; }
+        .btn-premium:hover .btn-premium-ico { transform: translateY(-.5px); opacity: 1; }
+
+        /* === Clean hover: only change text + icon to blue, NO shadow, NO bg change === */
+        .table .td.td-actions a.btn-premium:hover,
+        .table .td.td-actions .btn-premium:hover,
+        :global(a.btn-premium:hover) {
+          color: var(--brand) !important;
+          background: #ffffff !important;
+          border-color: #e6eaf2 !important;
+          box-shadow: none !important;
           transform: translateY(-1px);
-          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 1), 0 12px 26px rgba(15, 23, 42, 0.12), 0 0 0 4px var(--glow);
-          border-color: rgba(15, 23, 42, 0.25);
         }
-        .btn-premium:active {
-          transform: translateY(0);
-          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 8px 18px rgba(15, 23, 42, 0.12), 0 0 0 3px var(--glow);
-        }
-        .btn-premium:focus-visible {
-          outline: none;
-          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 0 0 3px rgba(255, 255, 255, 0.85), 0 0 0 5px var(--glow);
-        }
+        /* đảm bảo icon theo màu chữ */
+        .btn-premium .btn-premium-ico { stroke: currentColor; }
+        /* tránh bị lớp separator che */
+        .td-sticky .btn-premium { position: relative; z-index: 10; }
 
-        .hl {
-          background: #fff1a6;
-          padding: 0 2px;
-          border-radius: 3px;
-        }
-
-        /* ===== Empty – Trắng tinh khiết */
-        .empty-wrap {
-          max-width: 980px;
-          margin: 24px auto 0;
-          padding: 0 8px;
-        }
+        /* ===== Empty ===== */
+        .empty-wrap { max-width: 980px; margin: 24px auto 0; padding: 0 8px; }
         .empty-card {
-          background: #ffffff;
-          border: 1px solid #e6eaf2;
-          border-radius: 16px;
-          padding: 28px 24px;
-          text-align: center;
-          box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
+          background: #ffffff; border: 1px solid #e6eaf2; border-radius: 16px;
+          padding: 28px 24px; text-align: center; box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
         }
-        .empty-card h3 {
-          margin: 0 0 8px;
-          font-size: 20px;
-          font-weight: 800;
-          color: #0f172a;
-        }
-        .empty-sub {
-          color: #475569;
-          margin: 0 auto 16px;
-          max-width: 720px;
-          line-height: 1.6;
-        }
-        .empty-actions {
-          display: flex;
-          justify-content: center;
-        }
+        .empty-card h3 { margin: 0 0 8px; font-size: 20px; font-weight: 800; color: #0f172a; }
+        .empty-sub { color: #475569; margin: 0 auto 16px; max-width: 720px; line-height: 1.6; display: flex; gap: 8px; justify-content: center; }
+        .bulb { font-size: 18px; line-height: 1.2; }
+        .tip { display: inline-block; }
+        .empty-actions { display: flex; justify-content: center; }
         .btn-cta {
-          height: 40px;
-          padding: 0 18px;
-          border-radius: 12px;
-          border: none;
-          font-weight: 800;
-          font-size: 14px;
-          cursor: pointer;
-          background: #3b82f6;
-          color: white;
-          box-shadow: 0 10px 18px rgba(59, 130, 246, 0.25);
+          height: 40px; padding: 0 18px; border-radius: 12px; border: none; font-weight: 800; font-size: 14px;
+          cursor: pointer; background: #3b82f6; color: white; box-shadow: 0 10px 18px rgba(59,130,246,0.25);
           transition: transform 0.1s ease, box-shadow 0.15s ease;
         }
         .btn-cta:hover { transform: translateY(-1px); box-shadow: 0 14px 24px rgba(59,130,246,.28); }
         .btn-cta:active { transform: translateY(0); }
 
-        /* ===== Loading Overlay – Glassmorphism */
+        /* highlight cho text match */
+        mark.hl { background: #fff3c4; padding: 0 .15em; border-radius: 4px; }
+
+        /* ===== Loading Overlay ===== */
         .overlay {
-          position: fixed;
-          inset: 0;
-          background: radial-gradient(1200px 600px at 50% -10%, rgba(59,130,246,0.12), transparent 60%),
-                      rgba(248, 250, 252, 0.55);
-          backdrop-filter: blur(8px);
-          -webkit-backdrop-filter: blur(8px);
-          display: grid;
-          place-items: center;
-          z-index: 50;
+          position: fixed; inset: 0;
+          background: radial-gradient(1200px 600px at 50% -10%, rgba(59,130,246,0.12), transparent 60%), rgba(248, 250, 252, 0.55);
+          backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+          display: grid; place-items: center; z-index: 50;
         }
         .glass {
-          width: 360px;
-          max-width: calc(100% - 32px);
+          width: 360px; max-width: calc(100% - 32px);
           background: linear-gradient(180deg, rgba(255,255,255,0.85), rgba(246,248,252,0.9));
-          border: 1px solid rgba(15,23,42,0.08);
-          border-radius: 20px;
-          box-shadow:
-            inset 0 1px 0 rgba(255,255,255,0.9),
-            0 18px 48px rgba(15, 23, 42, 0.16),
-            0 0 0 8px rgba(59,130,246,0.10);
-          padding: 24px 20px 18px;
-          text-align: center;
-        }
-
-        .ring {
-          width: 72px;
-          height: 72px;
-          margin: 2px auto 12px;
-          border-radius: 50%;
-          position: relative;
-          background:
-            conic-gradient(from 0deg, rgba(59,130,246,0.9), rgba(59,130,246,0.35) 40%, rgba(59,130,246,0.12) 60%, transparent 80%);
-          mask: radial-gradient(circle 32px at 50% 50%, transparent 61%, black 62%);
-          animation: spin 1.6s linear infinite;
-          filter: drop-shadow(0 6px 14px rgba(59,130,246,0.35));
+          border: 1px solid rgba(15,23,42,0.08); border-radius: 20px;
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.9), 0 18px 48px rgba(15, 23, 42, 0.16), 0 0 0 8px rgba(59,130,246,0.10);
+          padding: 24px 20px 18px; text-align: center;
         }
         .ring {
-          width: 56px;
-          height: 56px;
-          margin: 2px auto 12px;
-          border-radius: 50%;
-          border: 4px solid #e5e7eb;     /* track nhạt */
-          border-top-color: #3b82f6;      /* màu quay */
-          animation: spin .8s linear infinite;
-          box-shadow: 0 6px 14px rgba(59,130,246,0.20);
-          background: none;               /* quan trọng: bỏ gradient */
-          mask: none;                     /* quan trọng: bỏ mask */
+          width: 56px; height: 56px; margin: 2px auto 12px; border-radius: 50%;
+          border: 4px solid #e5e7eb; border-top-color: #3b82f6;
+          animation: spin .8s linear infinite; box-shadow: 0 6px 14px rgba(59,130,246,0.20);
         }
         @keyframes spin { to { transform: rotate(360deg); } }
-
-        .loading-text {
-          font-weight: 900;
-          letter-spacing: 0.02em;
-          color: #0f172a;
-          margin-bottom: 10px;
-        }
+        .loading-text { font-weight: 900; letter-spacing: .02em; color: #0f172a; margin-bottom: 10px; }
         .cancel {
-          height: 36px;
-          padding: 0 14px;
-          border-radius: 999px;
-          border: 1px solid rgba(15,23,42,0.25);
-          background: linear-gradient(180deg, #ffffff, #f3f6fc);
-          cursor: pointer;
-          font-weight: 800;
-          color: #0f172a;
+          height: 36px; padding: 0 14px; border-radius: 999px; border: 1px solid rgba(15,23,42,0.25);
+          background: linear-gradient(180deg, #ffffff, #f3f6fc); cursor: pointer; font-weight: 800; color: #0f172a;
         }
         .cancel:hover { box-shadow: 0 8px 18px rgba(15,23,42,0.08); }
       `}</style>
