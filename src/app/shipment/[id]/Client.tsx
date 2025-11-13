@@ -27,6 +27,7 @@ const SEA_STEPS: Record<string, string> = {
   step9: "Place of Delivery (if different)",
   step10: "Final Delivery to Consignee",
 };
+
 const AIR_STEPS: Record<string, string> = {
   step1: "Pickup at Shipper",
   step2: "Received at Origin Warehouse / CY",
@@ -37,6 +38,7 @@ const AIR_STEPS: Record<string, string> = {
   step7: "Import Customs Clearance",
   step8: "Final Delivery to Consignee",
 };
+
 const EXTRA_STEPS_SEA: Record<string, string> = {
   "step6.1": "(Optional) Extra Transshipment",
   "step6.2": "(Optional) Extra Transshipment",
@@ -45,6 +47,7 @@ const EXTRA_STEPS_SEA: Record<string, string> = {
   step6_2: "(Optional) Extra Transshipment",
   step6_3: "(Optional) Extra Transshipment",
 };
+
 const EXTRA_STEPS_AIR: Record<string, string> = {
   "step5.1": "(Optional) Extra Transshipment",
   "step5.2": "(Optional) Extra Transshipment",
@@ -72,6 +75,7 @@ function readString(obj: unknown, key: string): string | null {
   const v = rec[key];
   return typeof v === "string" ? v : null;
 }
+
 function readUnknown(obj: unknown, key: string): unknown {
   if (!obj || typeof obj !== "object") return undefined;
   const rec = obj as Record<string, unknown>;
@@ -83,6 +87,7 @@ function getStepFromNote(n: Note): string {
   const raw = readUnknown(n, "step");
   return normalizeStepKey(typeof raw === "string" ? raw : undefined);
 }
+
 function getNoteTimeMs(n: Note): number {
   const raw = readUnknown(n, "note_time");
   if (raw instanceof Date) return raw.getTime();
@@ -93,25 +98,29 @@ function getNoteTimeMs(n: Note): number {
   }
   return 0;
 }
+
 function getNoteTimeText(n: Note, sliceTo: number): string {
   const raw = readUnknown(n, "note_time");
   if (raw instanceof Date) return raw.toISOString().slice(0, sliceTo).replace("T", " ");
   if (typeof raw === "string") return raw.slice(0, sliceTo).replace("T", " ");
   return "";
 }
+
 function getNoteType(n: Note): string | undefined {
   return readString(n, "note_type") ?? undefined;
 }
+
 function getNoteContent(n: Note): string {
   return readString(n, "note") ?? "";
 }
+
 function getNoteId(n: Note, fallback: string): string {
   const raw = readUnknown(n, "id");
   if (typeof raw === "string" || typeof raw === "number") return String(raw);
   return fallback;
 }
 
-/** Gom milestones thành ordered & extras */
+/** Gom milestones thành ordered & extras (hỗ trợ step6_1, step5_1, ...) */
 function groupMilestones(ms: MilestoneAny | null) {
   if (!ms) {
     return {
@@ -119,35 +128,39 @@ function groupMilestones(ms: MilestoneAny | null) {
       extras: [] as { key: string; status?: string | null; date?: string | null }[],
     };
   }
+
   const obj = ms as Record<string, string | null | undefined>;
-  const entries = Object.entries(obj).filter(([k]) => k !== "shipment_id" && k !== "created_at");
-
   const map: Record<string, { status?: string | null; date?: string | null }> = {};
-  const extras: { key: string; status?: string | null; date?: string | null }[] = [];
 
-  for (const [k, v] of entries) {
-    const base = normalizeStepKey(k.split("_")[0]);
+  for (const [k, v] of Object.entries(obj)) {
+    if (k === "shipment_id" || k === "created_at") continue;
+
+    const parts = k.split("_"); // ví dụ: step6_status, step6_1_status
+    let baseRaw = parts[0] ?? ""; // "step6"
+    const last = parts[parts.length - 1] ?? ""; // "status" | "date" | ...
+    const mid = parts.length >= 3 ? String(parts[1] ?? "") : "";
+
+    // "step6_1_status" -> baseRaw = "step6.1"
+    if (parts.length >= 3 && /^\d+$/.test(mid) && (last === "status" || last === "date")) {
+      baseRaw = `${parts[0]}.${mid}`;
+    }
+
+    const base = normalizeStepKey(baseRaw);
+
     if (!map[base]) map[base] = {};
+
     if (k.endsWith("_status")) map[base].status = (v ?? null) as string | null;
     if (k.endsWith("_date")) map[base].date = (v ?? null) as string | null;
   }
 
-  for (const base of Object.keys(map)) {
-    if (base.includes(".")) {
-      extras.push({ key: base, ...map[base] });
-      delete map[base];
-    }
-  }
+  const orderedKeys = Object.keys(map).filter((key) => !key.includes("."));
+  const extraKeys = Object.keys(map).filter((key) => key.includes("."));
 
-  const ordered = Object.keys(map)
-    .sort((a, b) => parseFloat(a.replace("step", "")) - parseFloat(b.replace("step", "")))
-    .map((key) => ({ key, ...map[key] }));
+  orderedKeys.sort((a, b) => parseFloat(a.replace("step", "")) - parseFloat(b.replace("step", "")));
+  extraKeys.sort((a, b) => parseFloat(a.replace("step", "")) - parseFloat(b.replace("step", "")));
 
-  extras.sort((a, b) => {
-    const pa = parseFloat(a.key.replace("step", ""));
-    const pb = parseFloat(b.key.replace("step", ""));
-    return pa - pb;
-  });
+  const ordered = orderedKeys.map((key) => ({ key, ...map[key] }));
+  const extras = extraKeys.map((key) => ({ key, ...map[key] }));
 
   return { ordered, extras };
 }
@@ -173,17 +186,34 @@ function groupNotesByStep(notes: Note[]): Record<string, Note[]> {
   return map;
 }
 
-const STEP_EXTRA_FIELD: Record<"SEA" | "AIR", Record<string, keyof Shipment>> = {
-  SEA: { step4: "place_of_receipt", step5: "pol_aol", step7: "pod_aod", step9: "place_of_delivery" },
-  AIR: { step4: "pol_aol", step6: "pod_aod" },
-};
-function getStepExtraValue(mode: string | undefined, stepKey: string, s: Shipment): string | null {
-  const m = (mode === "SEA" ? "SEA" : "AIR") as "SEA" | "AIR";
+function getStepExtraValue(
+  mode: string | undefined,
+  stepKey: string,
+  s: Shipment
+): string | null {
   const baseKey = normalizeStepKey(stepKey).split(".")[0];
-  const field = STEP_EXTRA_FIELD[m][baseKey as keyof typeof STEP_EXTRA_FIELD["SEA"]];
+
+  // Xác định field theo mode + step, viết tay cho rõ ràng,
+  // tránh index động gây lỗi TS
+  let field: string | undefined;
+
+  if (mode === "SEA") {
+    if (baseKey === "step4") field = "place_of_receipt";
+    else if (baseKey === "step5") field = "pol_aol";
+    else if (baseKey === "step7") field = "pod_aod";
+    else if (baseKey === "step9") field = "place_of_delivery";
+  } else {
+    // AIR (và các mode khác coi như AIR)
+    if (baseKey === "step4") field = "pol_aol";
+    else if (baseKey === "step6") field = "pod_aod";
+  }
+
   if (!field) return null;
-  const val = s[field];
+
+  // Đọc value từ Shipment một cách an toàn cho TS
+  const val = (s as Record<string, unknown>)[field];
   if (val == null) return null;
+
   const str = String(val).trim();
   return str || null;
 }
@@ -201,6 +231,7 @@ function splitRemarksToBullets(raw?: string | null): string[] {
 
 /* ================= MAIN ================= */
 type Props = { id: string };
+
 export default function ShipmentClient({ id }: Props) {
   const { data: hData, loading, refetch } = useShipment(id);
   const data = (hData as Detail | null) ?? null;
@@ -212,9 +243,8 @@ export default function ShipmentClient({ id }: Props) {
   const [copied, setCopied] = useState(false);
 
   const vWrapRef = useRef<HTMLDivElement | null>(null);
-  const [railFill, setRailFill] = useState(0);   // chiều dài vạch xanh
-  const [railLen, setRailLen] = useState(0);     // chiều cao nét đứt xám
-  
+  const [railFill, setRailFill] = useState(0); // chiều dài vạch xanh
+  const [railLen, setRailLen] = useState(0); // chiều cao nét đứt xám
 
   useEffect(() => {
     const channel = supabaseClient.channel(`ship-${id}`);
@@ -254,14 +284,22 @@ export default function ShipmentClient({ id }: Props) {
   useEffect(() => {
     const calc = () => {
       const wrap = vWrapRef.current;
-      if (!wrap) { setRailLen(0); setRailFill(0); return; }
+      if (!wrap) {
+        setRailLen(0);
+        setRailFill(0);
+        return;
+      }
       // Vị trí top của rail trong .vWrap (khớp CSS .rail { top:28px })
       const RAIL_TOP = 28;
       const wrapRect = wrap.getBoundingClientRect();
 
       // 1) Đo node của ITEM CUỐI (để cắt nét đứt xám đúng điểm)
       const lastAllNode = wrap.querySelector<HTMLElement>(".vList .vItem:last-child .node");
-      if (!lastAllNode) { setRailLen(0); setRailFill(0); return; }
+      if (!lastAllNode) {
+        setRailLen(0);
+        setRailFill(0);
+        return;
+      }
       const lastAllRect = lastAllNode.getBoundingClientRect();
       const lastAllCenter = lastAllRect.top - wrapRect.top + lastAllRect.height / 2;
 
@@ -271,7 +309,10 @@ export default function ShipmentClient({ id }: Props) {
 
       // 2) Đo node đã DONE cuối cùng (để tính vạch xanh)
       const doneNodes = Array.from(wrap.querySelectorAll<HTMLElement>(".vList .vItem .nodeDone"));
-      if (doneNodes.length === 0) { setRailFill(0); return; }
+      if (doneNodes.length === 0) {
+        setRailFill(0);
+        return;
+      }
       const lastDone = doneNodes[doneNodes.length - 1]!;
       const lastDoneRect = lastDone.getBoundingClientRect();
       const lastDoneCenter = lastDoneRect.top - wrapRect.top + lastDoneRect.height / 2;
@@ -282,7 +323,10 @@ export default function ShipmentClient({ id }: Props) {
     };
     const r = requestAnimationFrame(calc);
     window.addEventListener("resize", calc);
-    return () => { cancelAnimationFrame(r); window.removeEventListener("resize", calc); };
+    return () => {
+      cancelAnimationFrame(r);
+      window.removeEventListener("resize", calc);
+    };
   }, [showAll, highlight, data?.milestones]);
 
   const stepsMap = useMemo(() => {
@@ -346,7 +390,6 @@ export default function ShipmentClient({ id }: Props) {
   const isInProgress = (st?: string | null) => /in[\s-]*progress/i.test(st ?? "");
   const isStatusDone = (st?: string | null) => /\bdone\b/i.test(st ?? "") || /\bcomplete(d)?\b/i.test(st ?? "");
 
-
   const isDoneBase = (o: { status?: string | null; date?: string | null }) => {
     const st = o.status ?? "";
     if (isInProgress(st)) return false; // ép về "current"
@@ -380,10 +423,8 @@ export default function ShipmentClient({ id }: Props) {
 
   const idxInProgress = ordered.findIndex((o) => isInProgress(o.status ?? null));
   const firstTodoIdx = ordered.findIndex((o) => !isDoneWithTrans(o));
-  const currentIdx = 
-    idxInProgress !== -1
-    ? idxInProgress
-    : (firstTodoIdx === -1 ? Math.max(0, ordered.length - 1) : firstTodoIdx);
+  const currentIdx =
+    idxInProgress !== -1 ? idxInProgress : firstTodoIdx === -1 ? Math.max(0, ordered.length - 1) : firstTodoIdx;
   const percent = Math.min(100, Math.round(((currentIdx + 1) / Math.max(1, ordered.length)) * 100));
 
   const shipmentStatusFallback =
@@ -399,7 +440,7 @@ export default function ShipmentClient({ id }: Props) {
   const tsHas = s.transshipment_ports !== undefined && s.transshipment_ports !== null;
   const tsDisplay = tsHas ? String(s.transshipment_ports || "").trim() || "Yes" : "No";
 
-  type ExtraChild = { label: string; date?: string | null; status?: string | null };
+  type TransEvent = { label: string; date?: string | null; status?: string | null; isMain?: boolean };
   type DispStep = {
     id: string;
     label: string;
@@ -408,7 +449,7 @@ export default function ShipmentClient({ id }: Props) {
     status: "done" | "current" | "pending";
     statusText: string;
     notes: Note[];
-    children?: ExtraChild[];
+    transEvents?: TransEvent[];
   };
 
   const baseMap = data.shipment.mode === "SEA" ? SEA_STEPS : AIR_STEPS;
@@ -430,15 +471,42 @@ export default function ShipmentClient({ id }: Props) {
     return "pending";
   }
 
-  const childrenForTransit: ExtraChild[] | undefined =
-    extras.length > 0
-      ? extras.map((ex) => ({
-          label: (data.shipment.mode === "SEA" ? EXTRA_STEPS_SEA[ex.key] : EXTRA_STEPS_AIR[ex.key]) || "(Optional) Extra Transshipment",
-          date: ex.date ?? null,
-          status: ex.status ?? null,
-        }))
+  // ===== Build transshipment events: step6/step5 + các step6.1,6.2.../5.1,5.2...
+  const transExtras = extras.filter((ex) => ex.key.startsWith(`${transitKey}.`));
+  const rawTransEvents: TransEvent[] = [];
+
+  const mainTrans = ordered.find((o) => o.key === transitKey);
+  if (mainTrans && (mainTrans.status || mainTrans.date)) {
+    rawTransEvents.push({
+      label: baseMap[transitKey] ?? "Transshipment",
+      status: mainTrans.status ?? null,
+      date: mainTrans.date ?? null,
+      isMain: true,
+    });
+  }
+
+  transExtras.forEach((ex, idx) => {
+    const labelFromMap =
+      (data.shipment.mode === "SEA" ? EXTRA_STEPS_SEA[ex.key] : EXTRA_STEPS_AIR[ex.key]) ||
+      `Extra Transshipment ${idx + 1}`;
+    rawTransEvents.push({
+      label: labelFromMap,
+      status: ex.status ?? null,
+      date: ex.date ?? null,
+      isMain: false,
+    });
+  });
+
+  const transEvents: TransEvent[] | undefined =
+    rawTransEvents.length > 0
+      ? rawTransEvents.slice().sort((a, b) => {
+          const ta = a.date ? Date.parse(a.date) : 0;
+          const tb = b.date ? Date.parse(b.date) : 0;
+          return tb - ta; // newest first
+        })
       : undefined;
 
+  // ===== Map ra step để render
   const dispSteps: DispStep[] = ordered.map((st, idx) => {
     const label = baseMap[st.key] ?? st.key.toUpperCase();
     const extraVal = getStepExtraValue(s.mode as string | undefined, st.key, s);
@@ -446,8 +514,34 @@ export default function ShipmentClient({ id }: Props) {
     const code =
       st.key === "step5" && s.pol_aol ? String(s.pol_aol) : st.key === "step7" && s.pod_aod ? String(s.pod_aod) : null;
     const state = mkState(idx);
-    const txt = mkStatusText(st.status, st.date);
+
+    let statusForCard = st.status;
+    let dateForCard = st.date;
+
+    // Nếu step transshipment không có status/date nhưng có transEvents,
+    // dùng event mới nhất để hiển thị trên dòng status.
+    if (st.key === transitKey && !statusForCard && !dateForCard && (transEvents?.length ?? 0) > 0) {
+      const first = transEvents![0] as TransEvent | undefined;
+      if (first) {
+        const pickedStatus =
+          typeof first.status === "string" && first.status.trim()
+            ? first.status
+            : typeof first.label === "string" && first.label.trim()
+            ? first.label
+            : undefined;
+
+        if (pickedStatus) {
+          statusForCard = pickedStatus;
+        }
+        if (first.date) {
+          dateForCard = first.date;
+        }
+      }
+    }
+
+    const txt = mkStatusText(statusForCard, dateForCard);
     const nlist = notesByStep[st.key] || [];
+
     return {
       id: st.key,
       label,
@@ -456,17 +550,19 @@ export default function ShipmentClient({ id }: Props) {
       status: state,
       statusText: txt,
       notes: nlist,
-      ...(st.key === transitKey && childrenForTransit ? { children: childrenForTransit } : {}),
+      ...(st.key === transitKey && transEvents ? { transEvents } : {}),
     };
   });
 
   const visibleSteps = showAll
     ? dispSteps
-    : dispSteps.filter(
-        (d) =>
-          (ordered.find((o) => o.key === d.id)?.date ?? null) &&
-          (ordered.find((o) => o.key === d.id)?.status ?? null)
-      );
+    : dispSteps.filter((d) => {
+        const base = ordered.find((o) => o.key === d.id);
+        const hasBase = !!((base?.date ?? null) && (base?.status ?? null)); // logic cũ
+        const hasTrans = d.id === transitKey && d.transEvents && d.transEvents.length > 0;
+        return hasBase || hasTrans;
+      });
+
   const hiddenCount = dispSteps.length - visibleSteps.length;
 
   const getRef = (id: string) => (el: HTMLLIElement | null) => {
@@ -556,8 +652,8 @@ export default function ShipmentClient({ id }: Props) {
             <KVT k="Transit" v={tsDisplay} />
             <div className="line" />
             <KVT k="POD/AOD" v={s.pod_aod ?? "—"} />
-             <div className="line" />
-             <KVT k="Place of Delivery" v={s.place_of_delivery ?? "—"} />
+            <div className="line" />
+            <KVT k="Place of Delivery" v={s.place_of_delivery ?? "—"} />
             <div className="line" />
             <div style={{ fontSize: 13 }}>
               <div style={{ color: "#64748b" }}>Route</div>
@@ -612,9 +708,7 @@ export default function ShipmentClient({ id }: Props) {
               {dispSteps.map((d, i) => (
                 <button
                   key={d.id}
-                  className={
-                    "chip " + (d.status === "done" ? "chipDone" : d.status === "current" ? "chipCurrent" : "chipTodo")
-                  }
+                  className={"chip " + (d.status === "done" ? "chipDone" : d.status === "current" ? "chipCurrent" : "chipTodo")}
                   title={`${i + 1}. ${d.label}${d.location ? ` / ${d.location}` : ""}`}
                   onClick={() => jumpTo(d.id)}
                 >
@@ -627,48 +721,75 @@ export default function ShipmentClient({ id }: Props) {
 
         {/* Vertical timeline */}
         <div className="vWrap" ref={vWrapRef}>
-        <div className="rail" style={{ height: railLen }} />
-        <div className="railFill" style={{ height: railFill }} />
+          <div className="rail" style={{ height: railLen }} />
+          <div className="railFill" style={{ height: railFill }} />
           <ul className="vList">
             {visibleSteps.map((d, idx) => {
               const sideRight = idx % 2 === 1;
               const isFocus = highlight === d.id;
+              const events = d.transEvents ?? [];
+              const hasEvents = events.length > 0 && d.id === transitKey;
+
               return (
                 <li key={d.id} ref={getRef(d.id)} id={d.id} className="vItem">
                   <div
                     className={
-                      "node " + (d.status === "done" ? "nodeDone" : d.status === "current" ? "nodeCur" : "nodeTodo")
+                      "node " +
+                      (d.status === "done"
+                        ? "nodeDone"
+                        : d.status === "current"
+                        ? "nodeCur"
+                        : "nodeTodo")
                     }
                   >
-                    <span className="nodeSym">{d.status === "done" ? "✓" : d.status === "current" ? "•" : ""}</span>
+                    <span className="nodeSym">
+                      {d.status === "done" ? "✓" : d.status === "current" ? "•" : ""}
+                    </span>
                   </div>
 
                   <div className={`card ${sideRight ? "cardR" : "cardL"} ${isFocus ? "cardFocus" : ""}`}>
                     <div className="cardTop">
                       <h3 className="ttl">
-                        <span className="idx">{ordered.findIndex((o) => o.key === d.id) + 1}</span>
+                        <span className="idx">
+                          {ordered.findIndex((o) => o.key === d.id) + 1}
+                        </span>
                         <span>
                           {d.label}
                           {d.location ? <span className="loc"> / {d.location}</span> : null}
                         </span>
                       </h3>
                     </div>
-
                     <div className="sub">
                       {d.statusText}
                       {d.code ? `  •  ${d.code}` : ""}
                     </div>
 
-                    {d.children && d.children.length > 0 && (
-                      <div className="extraBox" aria-label="Extra Transshipment list">
-                        {d.children.map((c, i2) => (
-                          <div key={i2} className="extraRow">
-                            <span className="extraStatus">{(c.status ?? "N/A").toString()}</span>
-                            <span className="extraDate">({c.date ? formatYMD(c.date) : "—"})</span>
-                            <span className="extraDash">–</span>
-                            <span className="extraLabel">{c.label}</span>
-                          </div>
-                        ))}
+                    {hasEvents && (
+                      <div className="tsTimeline" aria-label="Transshipment history">
+                        <ul className="tsList">
+                          {events.map((ev, i2) => {
+                            const isLast = i2 === events.length - 1;
+                            return (
+                              <li key={i2} className="tsItem">
+                                <div className="tsRail">
+                                  <span className={`tsDot ${i2 === 0 ? "tsDotMain" : ""}`} />
+                                  {!isLast && <span className="tsLine" />}
+                                </div>
+                                <div className="tsContent">
+                                  <div className="tsText">
+                                    {(ev.status ?? ev.label ?? "N/A").toString()}
+                                  </div>
+                                  <div className="tsMeta">
+                                    <span className="tsDate">
+                                      {ev.date ? formatYMD(ev.date) : "—"}
+                                    </span>
+                                    {!ev.isMain && <span className="tsTag">Extra TS</span>}
+                                  </div>
+                                </div>
+                              </li>
+                            );
+                          })}
+                        </ul>
                       </div>
                     )}
 
@@ -844,6 +965,31 @@ export default function ShipmentClient({ id }: Props) {
         .loc{color:#9aa4b2}
         .badge{font-size:11px;border:1px solid #e5e7eb;border-radius:999px;padding:2px 8px}
         .sub{margin-top:6px;color:#6b7280;font-weight:600}
+        .tsTimeline{margin-top:10px;padding-top:4px;border-top:1px dashed #e5e7eb}
+        .tsList{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+        .tsItem{display:grid;grid-template-columns:14px 1fr;gap:10px;align-items:flex-start}
+        .tsRail{position:relative;display:flex;flex-direction:column;align-items:center}
+        .tsDot{
+          width:8px;height:8px;border-radius:999px;
+          background:#bbf7d0;
+          box-shadow:0 0 0 2px rgba(187,247,208,.6);
+          margin-top:3px;
+        }
+        .tsDotMain{
+          background:#22c55e;
+          box-shadow:0 0 0 3px rgba(34,197,94,.35);
+        }
+        .tsLine{flex:1;width:2px;background:#e5e7eb;margin-top:2px}
+        .tsContent{min-width:0;display:flex;justify-content:space-between;gap:8px}
+        .tsText{font-size:13px;color:#0f172a;font-weight:600;word-break:break-word}
+        .tsMeta{display:flex;align-items:center;gap:6px;font-size:11px;color:#6b7280}
+        .tsDate{white-space:nowrap}
+        .tsTag{
+          padding:2px 6px;border-radius:999px;
+          border:1px solid #e5e7eb;
+          background:#f3f4f6;
+          font-weight:700;
+        }
 
         .extraBox{margin-top:10px;border:1px solid #e5e7eb;background:#fafbff;border-radius:10px;padding:8px 10px;display:flex;flex-direction:column;gap:6px}
         .extraRow{display:grid;grid-template-columns:auto auto 12px 1fr;align-items:center;gap:8px;font-weight:600;color:#0f172a}
@@ -851,8 +997,6 @@ export default function ShipmentClient({ id }: Props) {
         .extraDate{color:#6b7280;font-size:12px}
         .extraDash{color:#9ca3af}
         .extraLabel{font-size:12px;color:#334155;font-weight:600;line-height:1.25}
-
-        /* (Giữ nguyên các style khác; style riêng của NotesBox đã đặt trong NotesBox) */
 
         .showMore{display:flex;justify-content:center;margin-top:10px}
         .showBtn{padding:8px 14px;border-radius:999px;border:1px solid #e5e7eb;background:#fff}
@@ -958,10 +1102,10 @@ function NotesBox({
         }
         .notesHeadB.zero{
           background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);
-          box-shadow:0 1px 0 #fff inset; /* bỏ ánh xanh */
+          box-shadow:0 1px 0 #fff inset;
         }
         .notesHeadB.zero::before{
-          background:#e5e7eb; /* thanh bên trái xám */
+          background:#e5e7eb;
         }
         .notesTB{font-size:12px;font-weight:900;letter-spacing:.08em;color:#0f172a;padding-left:6px}
         .notesCountB{font-size:11px;font-weight:800;padding:2px 8px;border-radius:999px;border:1px solid transparent}
@@ -987,6 +1131,7 @@ function icon(t?: string) {
 }
 
 type MilestoneLite = { key: string; status?: string | null; date?: string | null };
+
 function getLatestMilestoneStatus(
   ordered: MilestoneLite[],
   extras: MilestoneLite[]
