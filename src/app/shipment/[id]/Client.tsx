@@ -761,7 +761,6 @@ export default function ShipmentClient({ id }: Props) {
                     </div>
                     <div className="sub">
                       {d.statusText}
-                      {d.code ? `  •  ${d.code}` : ""}
                     </div>
 
                     {hasEvents && (
@@ -1008,7 +1007,16 @@ export default function ShipmentClient({ id }: Props) {
         .premiumTable .tHead{background:linear-gradient(180deg,#f7f9fc,#f2f5fb);color:#334155;font-weight:800;font-size:13px;border-bottom:1px solid #e9edf5}
         .premiumTable.sea .tHead,.premiumTable.sea .tRow{display:grid;grid-template-columns:64px 1.25fr 120px 1.35fr 120px 140px 140px;gap:16px;align-items:center;padding:12px 16px}
         .premiumTable.sea .tHead,.premiumTable.sea .tRow{place-items: center;text-align: center}
-        .premiumTable.air .tHead,.premiumTable.air .tRow{display:grid;grid-template-columns:64px 1.4fr 150px 120px 160px 200px;gap:16px;align-items:center;padding:12px 16px}
+        .premiumTable.air .tHead,
+        .premiumTable.air .tRow {
+          display:grid;
+          grid-template-columns:64px 1.4fr 150px 120px 160px 200px;
+          gap:16px;
+          align-items:center;
+          place-items:center;   /* canh giữa theo cả trục ngang & dọc */
+          text-align:center;    /* chữ nằm giữa */
+          padding:12px 16px;
+        }
         .premiumTable .tRow + .tRow{border-top:1px solid #eef2f7}
         .premiumTable .tRow:hover{background:#f9fbff}
         .muted{color:#64748b;margin:6px 0 0 2px}
@@ -1030,9 +1038,37 @@ export default function ShipmentClient({ id }: Props) {
 /* ===== helpers ===== */
 function KVT({ k, v }: { k: string; v?: ReactNode }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 13 }}>
-      <span style={{ color: "#64748b" }}>{k}</span>
-      <span style={{ color: "#0f172a", fontWeight: 600 }}>{v ?? "—"}</span>
+    <div
+      style={{
+        display: "flex",
+        alignItems: "flex-start",
+        justifyContent: "flex-start",
+        gap: 8,
+        fontSize: 13,
+      }}
+    >
+      {/* label bên trái */}
+      <span
+        style={{
+          color: "#64748b",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {k}
+      </span>
+
+      {/* value bên phải, chiếm hết phần còn lại + align right */}
+      <span
+        style={{
+          color: "#0f172a",
+          fontWeight: 600,
+          flex: 1,
+          textAlign: "right",
+          wordBreak: "break-word",
+        }}
+      >
+        {v ?? "—"}
+      </span>
     </div>
   );
 }

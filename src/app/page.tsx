@@ -353,7 +353,7 @@ export default function Page() {
                 <div className="table">
                   {/* Header */}
                   <div className="tr th">
-                    <div className="td td-actions td-sticky">Detail</div>
+                    <div className="td td-actions td-sticky">Detail</div>  {/* ✅ cột sticky */}
                     <div className="td">MODE</div>
                     <div className="td">SCOPE OF SERVICE</div>
                     <div className="td">MBL</div>
